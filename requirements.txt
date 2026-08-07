@@ -1,0 +1,45 @@
+# BillBro Backend Requirements
+# Python 3.10+
+
+# API Framework
+fastapi==0.104.1
+uvicorn==0.24.0
+pydantic==2.4.2
+
+# Database ORM
+sqlalchemy==2.0.23
+alembic==1.12.1
+
+# Database drivers
+# sqlite3 is built-in with Python - no need to install
+psycopg2-binary==2.9.9  # PostgreSQL (for production)
+
+# Async & Threading
+celery==5.3.4
+redis==5.0.1
+
+# ML/Computer Vision (Person B's dependencies)
+torch==2.1.1
+torchvision==0.16.1
+ultralytics==8.0.217  # YOLOv8
+opencv-python==4.8.1.78
+
+# Data Processing
+numpy==1.24.3
+pandas==2.1.3
+pillow==10.1.0
+
+# Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+
+# Code Quality
+black==23.12.0
+flake8==6.1.0
+mypy==1.7.1
+
+# Utilities
+python-dotenv==1.0.0
+python-multipart==0.0.6
+aiofiles==23.2.1
