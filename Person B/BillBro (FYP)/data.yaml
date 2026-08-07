@@ -1,0 +1,12 @@
+names:
+- apple
+- banana
+- dragonfruit
+- custard_apple
+- diet_coke
+- pepsi
+nc: 6
+path: /content/merged_dataset
+test: test/images
+train: train/images
+val: valid/images

@@ -1,0 +1,23 @@
+# ── Core ML ──────────────────────────────────────────────────────────────────
+ultralytics>=8.2.0          # YOLOv8 + training + inference
+torch>=2.0.0                # PyTorch backend
+torchvision>=0.15.0
+
+# ── Computer Vision ───────────────────────────────────────────────────────────
+opencv-python>=4.8.0        # Image/video I/O and annotation
+Pillow>=10.0.0              # PIL image handling
+supervision>=0.19.0         # Optional: richer annotation utilities
+
+# ── App & UI ─────────────────────────────────────────────────────────────────
+streamlit>=1.35.0           # Web app framework
+pandas>=2.0.0               # DataFrames for analytics display
+matplotlib>=3.7.0           # Plotting
+
+# ── Dataset (training only) ───────────────────────────────────────────────────
+roboflow>=1.1.0             # Dataset download & management
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+numpy>=1.24.0
+pyyaml>=6.0
+requests>=2.31.0
+tqdm>=4.65.0
