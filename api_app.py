@@ -8,12 +8,30 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 from datetime import datetime, date
+<<<<<<< Updated upstream
 from typing import List, Optional
 import json
 import os
 
 from database import Base, Item, Inventory, Alert, ModelVersion, Transaction, TrainingJob
 
+=======
+from typing import List, Optional, Any
+from functools import lru_cache
+from pydantic import BaseModel
+import json
+import os
+from pathlib import Path
+
+from database import Base, Item, Inventory, Alert, ModelVersion, Transaction, TrainingJob
+
+try:
+    from predict import GroceryDetector
+    DETECTOR_AVAILABLE = True
+except ImportError:
+    DETECTOR_AVAILABLE = False
+
+>>>>>>> Stashed changes
 # ============================================================================
 # Setup
 # ============================================================================
@@ -58,6 +76,36 @@ def get_db():
 
 
 # ============================================================================
+<<<<<<< Updated upstream
+=======
+# DETECTION SETUP (Person B's YOLOv8 Model)
+# ============================================================================
+
+@lru_cache(maxsize=1)
+def get_detector() -> Optional['GroceryDetector']:
+    """Load and cache the YOLOv8 detector model"""
+    if not DETECTOR_AVAILABLE:
+        return None
+
+    model_path = "models/grocery_yolov8.pt"
+    if not Path(model_path).exists():
+        return None
+
+    try:
+        return GroceryDetector(model_path)
+    except Exception as e:
+        print(f"Warning: Could not load detector: {e}")
+        return None
+
+
+class DetectRequest(BaseModel):
+    """Request body for /detect endpoint"""
+    image: str  # Base64-encoded image (no data-URL prefix)
+    confidence_threshold: float = 0.5  # Detection confidence threshold
+
+
+# ============================================================================
+>>>>>>> Stashed changes
 # ITEMS ENDPOINTS (Manage Products)
 # ============================================================================
 
@@ -345,6 +393,55 @@ def process_checkout(
 
 
 # ============================================================================
+<<<<<<< Updated upstream
+=======
+# DETECTION ENDPOINT (Wraps Person B's YOLOv8 Model)
+# ============================================================================
+
+@app.post("/detect", tags=["Detection"])
+def detect(body: DetectRequest):
+    """
+    Run YOLOv8 detection on base64-encoded image.
+
+    Request:
+        image: Base64-encoded image string (no "data:image/..." prefix)
+        confidence_threshold: Detection confidence threshold (0.0-1.0)
+
+    Response:
+        {
+            "detections": [
+                {"item_name": str, "confidence": float, "bbox": [x1, y1, x2, y2]},
+                ...
+            ],
+            "processing_time_ms": int
+        }
+
+    Raised by Person B's GroceryDetector:
+        - ValueError: If image_b64 cannot be decoded
+        - FileNotFoundError: If model file not found
+    """
+    detector = get_detector()
+
+    if detector is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Detection model not available. Check that models/grocery_yolov8.pt exists and ultralytics is installed."
+        )
+
+    try:
+        result = detector.detect_from_base64(
+            body.image,
+            confidence_threshold=body.confidence_threshold
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid image: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Detection failed: {str(e)}")
+
+
+# ============================================================================
+>>>>>>> Stashed changes
 # MODELS ENDPOINT
 # ============================================================================
 
