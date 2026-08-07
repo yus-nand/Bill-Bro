@@ -8,14 +8,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 from datetime import datetime, date
-<<<<<<< Updated upstream
-from typing import List, Optional
-import json
-import os
-
-from database import Base, Item, Inventory, Alert, ModelVersion, Transaction, TrainingJob
-
-=======
 from typing import List, Optional, Any
 from functools import lru_cache
 from pydantic import BaseModel
@@ -31,7 +23,6 @@ try:
 except ImportError:
     DETECTOR_AVAILABLE = False
 
->>>>>>> Stashed changes
 # ============================================================================
 # Setup
 # ============================================================================
@@ -76,8 +67,6 @@ def get_db():
 
 
 # ============================================================================
-<<<<<<< Updated upstream
-=======
 # DETECTION SETUP (Person B's YOLOv8 Model)
 # ============================================================================
 
@@ -105,7 +94,6 @@ class DetectRequest(BaseModel):
 
 
 # ============================================================================
->>>>>>> Stashed changes
 # ITEMS ENDPOINTS (Manage Products)
 # ============================================================================
 
@@ -393,8 +381,6 @@ def process_checkout(
 
 
 # ============================================================================
-<<<<<<< Updated upstream
-=======
 # DETECTION ENDPOINT (Wraps Person B's YOLOv8 Model)
 # ============================================================================
 
@@ -441,7 +427,6 @@ def detect(body: DetectRequest):
 
 
 # ============================================================================
->>>>>>> Stashed changes
 # MODELS ENDPOINT
 # ============================================================================
 
