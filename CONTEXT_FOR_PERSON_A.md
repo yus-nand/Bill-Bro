@@ -1,54 +1,94 @@
 # BillBro — Backend Context (for Person A's Claude)
 
-Paste this into your own Claude chat/project for context on where things
-stand with the frontend. Thanks for closing out all the open items —
-Checkout, Inventory, and Alerts are all genuinely working now.
+Person C (frontend) put this together after reconciling `FOR_PERSON_C.md`
+against the actual frontend build. Paste this into your own Claude
+chat/project so it has full context on what the frontend needs from your
+API — no need to go read the frontend code yourself.
 
-## Everything's resolved — nothing blocking right now
+## What's already confirmed and working
 
-- **`POST /detect`** — built to spec, integrated into Checkout. Frontend
-  sends base64 image, gets back detections, aggregates them, sends to
-  `/checkout/bill`. Working end-to-end on my side.
-- **CORS, `/items` vs `/inventory`, `/alerts/{id}` body, `POST /items`
-  shape, `/models/active`, `/health`** — all confirmed and either
-  integrated or ready to wire up when those pages get built.
+Your handoff doc (`FOR_PERSON_C.md`) is being used as-is for these, and the
+frontend is already calling them (or ready to):
 
-Nothing urgent needed from you right now. Two small things whenever
-convenient, not blocking anything:
+| Endpoint | Frontend usage |
+|---|---|
+| `GET /items` | Inventory page — live, working off this today |
+| `GET /items/{id}` | not called yet |
+| `POST /items` | Add Item page (not built yet) |
+| `PATCH /inventory/{id}` `{quantity, reason}` | Inventory manual adjust (not wired yet) |
+| `GET /alerts` | Alerts page — live, working off this today |
+| `POST /checkout/bill` `{detections: [{item_name, confidence, quantity}]}` | Checkout (blocked, see below) |
+| `GET /models/active` | Models page (not built yet) |
+| `GET /health` | not called yet |
 
-## 1. Minor doc inconsistency (not urgent)
+No changes needed on your side for these — just flagging what's actually
+in use so you know what a breaking change would affect.
 
-Your first doc said `/items` has no stock info (`/inventory` is separate
-for that). A later section said `GET /items` "Response: List of items with
-current_count... Use for: ...inventory page." Those don't match — I've
-kept the Inventory page on `/inventory` since that's been explicitly
-confirmed multiple times as the right one, but wanted to flag the
-inconsistency in case it's a sign of a different underlying discrepancy
-(e.g. does `/items` actually return current_count now and the example
-response is just stale?).
+## 4 things I need from you
 
-## 2. `FRONTEND_INTEGRATION_GUIDE.md`
+### 1. CORS — probably the first thing that'll break testing
 
-You've referenced this a few times as having CORS config, deployment
-steps, etc., but it's listed as living at
-`C:\Users\Admin\Desktop\BE Project\...` on your machine — I don't think
-it's actually been shared yet. Send it over whenever, no rush, mostly
-curious if there's deployment guidance in there I should know about ahead
-of picking an nginx target.
+The frontend runs on a different origin than your API (`localhost:5173` in
+dev, wherever nginx serves it in prod; your API is `localhost:8000`).
+Browser fetches will fail with a CORS error even though `curl`/Postman/your
+`/docs` page work perfectly fine — that's expected, not a bug in either of
+our code. Can you confirm `CORSMiddleware` is (or will be) configured to
+allow the frontend's origin? If you're using FastAPI:
 
-## What's next on my end
+```python
+from fastapi.middleware.cors import CORSMiddleware
 
-Building out Add Item once your training endpoints
-(`POST /training/upload_images`, `GET /training/job/{id}`) land — no rush,
-I know that's Week 2-3 for you. Same for Admin (Week 7) and the fuller
-Models page (Week 8).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],  # add prod origin once known
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+```
 
-One thing worth a heads-up if you talk to Person B before I do: detection
-*accuracy* in Checkout depends on the model conversion
-(`billbro_v3.onnx` → `.pt`) landing — the endpoint itself works regardless,
-but worth knowing if that's still pending on their end.
+### 2. No detection endpoint exists — this blocks Checkout entirely
+
+Your doc shows `POST /checkout/bill` expecting detections to already exist
+as `{item_name, confidence, quantity}`, but there's no endpoint anywhere
+that takes a photo and returns detections (no `/checkout/detect`,
+`/predict`, etc.). I need to know:
+
+- Are you adding a detect endpoint that wraps Person B's model? Or does
+  the frontend call Person B's model service directly, separately from
+  your API?
+- If it's a separate service, what URL/port, so I can add it to the
+  frontend's env config?
+- What shape does it return — raw per-instance detections (one entry per
+  detected object, like `predict.py`'s `(class_name, confidence, xyxy)`
+  tuples) or something pre-grouped? If it's per-instance, the frontend
+  will aggregate into the `{item_name, confidence, quantity}` shape your
+  `/checkout/bill` expects before sending — just confirm that's the right
+  division of responsibility.
+
+### 3. Two response/request shapes weren't shown in your doc — need confirming
+
+- `GET /inventory` — you listed this as a separate endpoint from
+  `GET /items`, but only gave a response example for `/items`. What does
+  `/inventory` actually return, and should the frontend use it instead of
+  `/items`, or are they interchangeable?
+- `PATCH /alerts/{id}` (resolve an alert) — no request body shown. The
+  frontend is currently sending `{"resolved": true}` as a guess — is that
+  right, or does it expect something else?
+
+### 4. Endpoints that don't exist yet, needed for later weeks
+
+Not urgent, but these pages are blocked without them:
+- Bulk CSV upload + store settings (Admin page, Week 7)
+- Training image upload + job status polling (Add Item page, Week 4)
+- Model version history + activate/rollback (Models page, Week 8, beyond
+  the `GET /models/active` you already have)
+
+No rush on these — just flagging so they're on your radar before those
+weeks arrive.
 
 ## How to respond
 
-Same as always — tell me directly, update `FOR_PERSON_C.md`, or drop a
-note in the group chat. `API_CONTRACT.md` stays the source of truth.
+Whatever you confirm, the easiest path is: tell Person C directly, or
+update `FOR_PERSON_C.md` / say it in the group chat. Person C is keeping
+`API_CONTRACT.md` (in the shared project) as the single source of truth
+and will update it once each of these is answered.
