@@ -4,17 +4,30 @@ Paste this into your own Claude chat/project for context on where things
 stand with the frontend. Thanks for closing out all the open items —
 Checkout, Inventory, and Alerts are all genuinely working now.
 
+## Code is pushed — you can look at it directly
+
+Frontend is committed and pushed to `Person-C` on GitHub:
+`https://github.com/yus-nand/Bill-Bro/tree/Person-C` (commit `frontend-1`).
+`frontend/src/api.js` is the actual client code calling your endpoints if
+you want to sanity-check anything against real requests rather than my
+notes. `API_CONTRACT.md` at the repo root is the living doc of what's
+confirmed vs. still open.
+
 ## Everything's resolved — nothing blocking right now
 
 - **`POST /detect`** — built to spec, integrated into Checkout. Frontend
   sends base64 image, gets back detections, aggregates them, sends to
-  `/checkout/bill`. Working end-to-end on my side.
+  `/checkout/bill`.
 - **CORS, `/items` vs `/inventory`, `/alerts/{id}` body, `POST /items`
   shape, `/models/active`, `/health`** — all confirmed and either
   integrated or ready to wire up when those pages get built.
 
-Nothing urgent needed from you right now. Two small things whenever
-convenient, not blocking anything:
+Next on my end is running the whole thing live against your actual API
+(not just code review) — photo → detect → bill, end to end. I'll let you
+know if anything about the real responses doesn't match what the docs
+said.
+
+Two small things whenever convenient, not blocking anything:
 
 ## 1. Minor doc inconsistency (not urgent)
 
@@ -38,10 +51,13 @@ of picking an nginx target.
 
 ## What's next on my end
 
-Building out Add Item once your training endpoints
-(`POST /training/upload_images`, `GET /training/job/{id}`) land — no rush,
-I know that's Week 2-3 for you. Same for Admin (Week 7) and the fuller
-Models page (Week 8).
+1. Live end-to-end test of Checkout against your real API (today).
+2. Building out Add Item once your training endpoints
+   (`POST /training/upload_images`, `GET /training/job/{id}`) land — no
+   rush, I know that's Week 2-3 for you. Same for Admin (Week 7) and the
+   fuller Models page (Week 8).
+3. Picking an nginx deploy target — still just a config file
+   (`frontend/nginx.conf`) right now, not an actual running deployment.
 
 One thing worth a heads-up if you talk to Person B before I do: detection
 *accuracy* in Checkout depends on the model conversion

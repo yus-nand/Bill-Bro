@@ -3,13 +3,25 @@
 // Detection architecture is Person A's confirmed Option A (backend wraps
 // Person B's model) — see RESPONSE_TO_PERSON_C_FINAL.md / API_CONTRACT.md.
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import PageShell from "../components/PageShell.jsx";
 import { detectImage, processCheckout } from "../api.js";
 import { aggregateDetections } from "../utils.js";
 import { API_BASE_URL } from "../config.js";
 
 // step: "idle" | "detecting" | "review" | "billing" | "done" | "error"
+
+// Person B's base model (as of the Week 1 delivery) is only trained on
+// these six items — worth surfacing so staff know what to expect before
+// Week 4's training pipeline adds more.
+const SUPPORTED_ITEMS = [
+  "Apple",
+  "Banana",
+  "Dragon Fruit",
+  "Custard Apple",
+  "Diet Coke",
+  "Pepsi",
+];
 
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
@@ -37,6 +49,19 @@ export default function Checkout() {
   const [cart, setCart] = useState([]); // [{ item_name, confidence, quantity }]
   const [processingTimeMs, setProcessingTimeMs] = useState(null);
   const [receipt, setReceipt] = useState(null);
+  const [detectingElapsedSec, setDetectingElapsedSec] = useState(0);
+
+  // Person B's delivery notes flag no default GPU acceleration — detection
+  // can take up to ~2 minutes per image on CPU. Surface that once the wait
+  // gets long instead of leaving staff staring at a bare "Detecting…".
+  useEffect(() => {
+    if (step !== "detecting") {
+      setDetectingElapsedSec(0);
+      return;
+    }
+    const id = setInterval(() => setDetectingElapsedSec((s) => s + 1), 1000);
+    return () => clearInterval(id);
+  }, [step]);
 
   const reset = () => {
     setPreview(null);
@@ -104,7 +129,9 @@ export default function Checkout() {
     step === "idle"
       ? "Take or upload a photo of the cart to get started."
       : step === "detecting"
-      ? "Detecting items…"
+      ? detectingElapsedSec < 5
+        ? "Detecting items…"
+        : `Still detecting (${detectingElapsedSec}s) — the first request of a session loads the model and takes a few seconds longer.`
       : step === "review"
       ? `Found ${cart.length} item type${cart.length === 1 ? "" : "s"}${
           processingTimeMs != null ? ` in ${processingTimeMs}ms` : ""
@@ -137,6 +164,10 @@ export default function Checkout() {
           <label htmlFor="checkout-photo-input" className="bb-btn bb-btn-primary">
             📷 Take or upload a photo
           </label>
+          <p className="bb-caption" style={{ marginTop: 14, marginBottom: 0 }}>
+            Detectable right now: {SUPPORTED_ITEMS.join(", ")}. More items
+            arrive as they're trained in (Week 4+).
+          </p>
         </div>
       )}
 
