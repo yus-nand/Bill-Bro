@@ -11,17 +11,13 @@ import { API_BASE_URL } from "../config.js";
 
 // step: "idle" | "detecting" | "review" | "billing" | "done" | "error"
 
-// Person B's base model (as of the Week 1 delivery) is only trained on
-// these six items — worth surfacing so staff know what to expect before
-// Week 4's training pipeline adds more.
-const SUPPORTED_ITEMS = [
-  "Apple",
-  "Banana",
-  "Dragon Fruit",
-  "Custard Apple",
-  "Diet Coke",
-  "Pepsi",
-];
+// Person B's base model is trained on six items, but per
+// RESPONSES_TO_PERSON_B_AND_C.md, Pepsi has AP = 0.000 — a dataset gap
+// (only a generic soda-can was in the source data), so real Pepsi cans
+// won't reliably detect yet even though the class exists. Listed
+// separately so staff don't trust it the same as the other five.
+const RELIABLE_ITEMS = ["Apple", "Banana", "Dragon Fruit", "Custard Apple", "Diet Coke"];
+const UNRELIABLE_ITEM_NOTE = "Pepsi is in the model but has a known dataset gap — don't rely on it detecting yet.";
 
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
@@ -164,9 +160,12 @@ export default function Checkout() {
           <label htmlFor="checkout-photo-input" className="bb-btn bb-btn-primary">
             📷 Take or upload a photo
           </label>
-          <p className="bb-caption" style={{ marginTop: 14, marginBottom: 0 }}>
-            Detectable right now: {SUPPORTED_ITEMS.join(", ")}. More items
-            arrive as they're trained in (Week 4+).
+          <p className="bb-caption" style={{ marginTop: 14, marginBottom: 4 }}>
+            Reliably detectable right now: {RELIABLE_ITEMS.join(", ")}. More
+            items arrive as they're trained in.
+          </p>
+          <p className="bb-caption" style={{ marginTop: 0, marginBottom: 0 }}>
+            ⚠️ {UNRELIABLE_ITEM_NOTE}
           </p>
         </div>
       )}

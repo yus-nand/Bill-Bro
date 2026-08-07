@@ -77,7 +77,7 @@ the trustworthy identifier. Full reasoning in `API_CONTRACT.md`.
 - **Still placeholders — no backend endpoints exist yet:** Admin (Week 7),
   the fuller Models page beyond "current active model" (Week 8)
 
-## Detection flow (now resolved — Option A)
+## Detection flow (Option A, shape confirmed — but see caveat below)
 
 Person A's API owns `POST /detect`: frontend sends a base64 image, gets
 back raw per-instance detections `{item_name, confidence, bbox}`. The
@@ -87,13 +87,25 @@ calling `POST /checkout/bill`. The backend response is the source of truth
 for the receipt — the frontend doesn't recompute totals locally, it just
 renders what `/checkout/bill` returns.
 
-⚠️ **No GPU acceleration by default — Person B's own notes say inference
-can take up to ~2 minutes per image on CPU.** The frontend's axios client
-overrides its default 15s timeout to 3 minutes specifically for
-`/detect`, and the Checkout UI shows a "still detecting" message once the
-wait passes 8 seconds so staff aren't left staring at a frozen screen.
-Worth confirming with Person A whether the deployed backend actually has
-GPU access — if so, both of those can come back down.
+**Real measured latency** (per Person A, supersedes the earlier "~2 min
+on CPU" worst case): ~2-3s cold start, ~100-200ms after. `detectImage()`'s
+timeout is 30s, and Checkout's "still detecting" message now only kicks
+in after 5s with copy about the first-request model load, not a
+multi-minute wait.
+
+⚠️ **Caveat on "live":** Person A's own `RESPONSES_TO_PERSON_B_AND_C.md`
+headlines `/detect` as LIVE, but its own bottom section admits an
+unresolved numpy/torch dependency issue blocking him from actually
+testing it, and the code is sitting on an unpushed branch
+(`feat/detect-endpoint`). Frontend is built against the documented shape
+(multiple docs agree on it), but "Integrated" should be read as "wired up
+to spec," not "verified against a running backend," until that's
+confirmed resolved.
+
+⚠️ **Pepsi doesn't reliably detect** — AP = 0.000, a training-data gap
+(only a generic soda-can stood in for it). Checkout's idle screen lists
+the five reliable items separately with a warning about Pepsi. Real
+fix needs actual Pepsi training data — Person B's backlog, not frontend's.
 
 ## Frontend structure & design
 
@@ -128,15 +140,25 @@ violet) are both done, plus a collapsible sidebar.
   latency — see above).
 - Whether `GET /models` will expose Person B's `v1`/`v2` string version
   ids as-is or wrap them in something else — matters for the Models page.
-- `GET /training/job/{id}`'s exact field names — two docs disagree
-  (`BillBro_TeamUpdates.md` vs `PERSON_B_DELIVERABLES_ANALYSIS.md`); the
-  frontend reads both possible shapes defensively, but Person A should
-  confirm which one his endpoint returns. Full detail in
-  `API_CONTRACT.md`.
-- Whether `batch_number` is the exact field name Person A's `POST /items`
-  expects — frontend's best guess, unconfirmed. Also whether his
-  validation requires `barcode` (frontend omits it by decision) — would
-  need revisiting if his backend rejects items without one.
-- Manual vs. automatic shelving confirmation, and cumulative vs.
-  fresh-from-base retraining strategy — open questions raised in
-  `BillBro_TeamUpdates.md` itself, between Person A and Person B.
+- ~~`GET /training/job/{id}`'s field names~~ — **resolved.** Locked per
+  `RESPONSES_TO_PERSON_B_AND_C.md`: `{id, item_id, status, progress,
+  current_epoch ("2/5" string), metrics, error_message, created_at,
+  completed_at}`. Full detail in `API_CONTRACT.md`.
+- Whether `batch_number` is actually accepted by `POST /items` — the
+  newest "confirmed" example in `RESPONSES_TO_PERSON_B_AND_C.md` omits it
+  entirely (request and response both). Could just be an abbreviated
+  example, could mean it's unsupported — frontend keeps sending it for
+  now, needs a direct confirm. `barcode` is confirmed *not* needed —
+  Person A's shape doesn't include it, matching the frontend's decision
+  to drop it.
+- **New:** whether `/detect` is actually verified working on Person A's
+  end — his own doc flags an unresolved numpy/torch dependency issue and
+  says the code isn't pushed to GitHub yet. Frontend is built to spec but
+  hasn't been confirmed against a truly live backend.
+- Pepsi's AP = 0.000 dataset gap — confirmed real (not a frontend bug),
+  already flagged in the Checkout UI. Needs real training data to fix,
+  tracked as Person B's item.
+- Manual vs. automatic shelving confirmation — still open, raised in
+  `BillBro_TeamUpdates.md` between Person A and Person B. (Cumulative
+  fine-tuning + ReplayPool retraining strategy is now confirmed, no
+  longer open.)

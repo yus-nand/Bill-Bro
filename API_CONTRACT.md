@@ -26,6 +26,30 @@ This also introduces schema changes:
 Item / training section next (built ahead of the backend), then other
 proposed/unbuilt calls below a clear divider.
 
+## 🚨 New: `/detect`'s "LIVE" claim is shakier than it sounds
+
+`RESPONSES_TO_PERSON_B_AND_C.md` headlines with "`/detect` endpoint LIVE,
+ready for integration" — but its own bottom section contradicts that:
+
+> **🚨 Current Issue: numpy/torch Compatibility** — Working on fixing ML
+> dependency installation issue. Once resolved: 1. `pip install` will
+> work 2. `/detect` endpoint will be fully testable 3. Can share working
+> API with Person C
+>
+> **Immediate Next Steps:** 1. Fix numpy/torch installation (in
+> progress) 2. Test `/detect` endpoint locally 3. Commit to GitHub
+> (branch: `feat/detect-endpoint`) ... **Timeline:** GitHub push
+> today/tomorrow
+
+So per the same doc: the code isn't fully testable yet, isn't pushed to
+GitHub yet (sitting on an unmerged local branch), and hasn't actually
+been run successfully end-to-end. That's a spec-complete, code-written
+state — not a confirmed-working one. Doesn't change anything on the
+frontend (already built against the documented shape, which multiple
+docs agree on), but **"Integrated"** below should be read as "wired up
+against the documented contract," not "verified working against a
+live backend" until this is confirmed resolved.
+
 ## 🚩 Possible team misalignment — flagging, not resolving
 
 `FOR_PERSON_C_CHECKOUT_INTEGRATION.md` (Person A, sent after
@@ -53,7 +77,7 @@ one Person A/B are actually prioritizing on their end.
 | 5 | `PATCH /inventory/{id}` | ✅ Confirmed, response shape now known | Inventory manual adjust (not wired yet) |
 | 6 | `GET /alerts` | ✅ Confirmed (`resolved=false` default filter) | Alerts — **Integrated** |
 | 7 | `PATCH /alerts/{id}` | ✅ Confirmed, no request body | Alerts resolve — **Integrated** |
-| 8 | `POST /detect` | ✅ Confirmed — Option A decided | Checkout — **Integrated** |
+| 8 | `POST /detect` | ✅ Confirmed shape — Option A decided. ⚠️ Person A's own doc says still unverified/unpushed on his end (numpy/torch issue) | Checkout — **Integrated against spec** |
 | 9 | `POST /checkout/bill` | ✅ Confirmed | Checkout — **Integrated** |
 | 10 | `GET /models/active` | ✅ Confirmed, full shape | Models (not built yet) |
 | 11 | `GET /health` | ✅ Confirmed, full shape | not called yet |
@@ -106,6 +130,29 @@ A's original examples, so the exact field name is the frontend's best
 guess at what he'll expect; confirm once his endpoint exists. Per the
 same doc, the created item starts at **`status: "pending"`** — it isn't
 checkout-detectable until training succeeds and it flips to `"shelved"`.
+
+⚠️ **New wrinkle:** `RESPONSES_TO_PERSON_B_AND_C.md` gives a fuller,
+"confirmed" `POST /items` example, and it shows **neither `batch_number`
+nor `status`**, in either the request or the response:
+```json
+// Request
+{ "name": "Maggi Noodles", "sku": "MAG001", "price": 15.00,
+  "category": "snacks", "expiry_date": "2026-12-31", "low_stock_threshold": 5 }
+// Response
+{ "status": "success", "item_id": 7,
+  "item": { "id": 7, "name": "Maggi Noodles", "sku": "MAG001", "price": 15.00,
+    "category": "snacks", "low_stock_threshold": 5, "expiry_date": "2026-12-31",
+    "created_at": "2026-08-08T..." } }
+```
+No `barcode` either, which matches the frontend's decision to drop it —
+good. But `batch_number`'s absence is new and unconfirmed either way: it
+could just be an abbreviated example (optional fields often get left out
+of docs), or it could mean the field isn't actually supported server-side.
+The frontend keeps sending `batch_number` for now since removing it on a
+guess is riskier than a field the backend silently ignores — **worth a
+direct confirm with Person A** rather than assuming. Same logic for the
+missing `status` in the response: not proof it doesn't exist, just not
+shown here.
 
 #### Barcode dropped from the frontend
 
@@ -191,6 +238,19 @@ finished implementing it, not just deciding on it):
 - Testing options Person A provided: Swagger UI at `/docs`, a
   `test_detect_endpoint.py` script, or curl — useful if something looks
   broken and you want to isolate frontend vs. backend.
+- ⚠️ **See the callout above** — Person A's own doc says he hasn't
+  actually run this successfully yet (unresolved numpy/torch dependency
+  issue) and the code isn't pushed to GitHub. Spec-complete, not
+  verified-working.
+
+**⚠️ Pepsi: don't trust it yet.** Per `RESPONSES_TO_PERSON_B_AND_C.md`,
+Pepsi has **AP = 0.000** — the training data only had a generic soda-can
+image standing in for it, so real Pepsi cans won't reliably detect
+despite `pepsi` being a valid model class. Confirmed not a frontend bug.
+Checkout's idle screen now lists the five reliable items separately from
+Pepsi, with an explicit warning, so staff don't trust it the same way.
+Will need real Pepsi training data to fix — tracked as a Person B/ML
+backlog item, not a frontend one.
 
 ### `POST /checkout/bill` (live, integrated)
 ```json
@@ -237,30 +297,29 @@ see above) → photo capture (15 recommended, 5 minimum) →
 error out on the training-upload/poll calls until Person A builds those
 two endpoints, by design (built ahead of time per the reprioritization).
 
-### ⚠️ Conflicting docs on `GET /training/job/{job_id}`'s shape
+### ✅ `GET /training/job/{id}` shape — now locked
 
-Two docs describe this differently and need reconciling with Person A:
+Previously two docs disagreed on field names; `RESPONSES_TO_PERSON_B_AND_C.md`
+resolves it — Person A confirms "Your TrainingJob table alignment: 100%
+locked" against Person B's actual table:
 
-**`BillBro_TeamUpdates.md`'s `TrainingJob` table:**
 ```json
 { "id": 1, "item_id": 7, "status": "running", "progress": 35,
-  "current_epoch": 2, "metrics": null, "error_message": null,
+  "current_epoch": "2/5", "metrics": null, "error_message": null,
   "created_at": "...", "completed_at": null }
 ```
 
-**`PERSON_B_DELIVERABLES_ANALYSIS.md`'s job status file:**
-```json
-{ "job_id": "abc123", "status": "running", "progress": 35,
-  "stage": "training", "epoch": "0/5", "metrics": null,
-  "updated_at": "2026-08-07T18:00:00Z" }
-```
+This is `BillBro_TeamUpdates.md`'s version, confirmed as final —
+`PERSON_B_DELIVERABLES_ANALYSIS.md`'s `job_id`/`stage`/`epoch`/`updated_at`
+naming was the earlier draft, not what shipped. Notes:
+- The job's own id field is **`id`**, not `job_id` — `job_id` only shows
+  up in the *upload* endpoint's response (what you poll with).
+- `current_epoch` is a string like `"2/5"`, not a bare number.
+- `status` enum is exactly `pending | running | success | failed`.
 
-Different field names for what's presumably the same data
-(`current_epoch` vs `epoch`, `error_message` vs (elsewhere) `reason`,
-`completed_at` vs `updated_at`). **The frontend reads both** —
-`AddItem.jsx`'s `normalizeJobStatus()` checks each possible field name —
-so it'll work either way, but Person A should confirm which one his
-endpoint actually returns so this can be simplified.
+`AddItem.jsx`'s `normalizeJobStatus()` still checks a couple of
+alternate field names as a defensive fallback, but that's no longer
+load-bearing — just cheap insurance.
 
 `status` values handled: `success | complete | completed | shelved` as
 terminal-success, `failed | error` as terminal-failure, anything else
@@ -302,8 +361,17 @@ building the Models page against it.
 - ~~`/inventory` vs `/items`~~ — documented (with one lingering
   inconsistency noted above).
 - ~~`PATCH /alerts/{id}` body~~ — none needed.
-- ~~`POST /items` body~~ — documented above.
+- ~~`POST /items` body~~ — documented above (mostly — see `batch_number`
+  caveat below).
 - ~~`GET /models/active` / `GET /health` shapes~~ — documented above.
+- ~~`GET /training/job/{id}` field-name conflict~~ — locked, see above.
+- ~~`barcode` on `POST /items`~~ — Person A's confirmed shape has no
+  `barcode` field, matching the frontend's decision to drop it. No
+  validation conflict expected.
+- ~~Cumulative vs. fresh-from-base retraining strategy~~ — confirmed
+  cumulative fine-tuning + Person B's ReplayPool, to avoid catastrophic
+  forgetting. Doesn't change anything on the frontend, just no longer
+  open.
 
 ## Still open
 
@@ -319,17 +387,18 @@ building the Models page against it.
   item, not built yet.
 - Admin and the fuller model-management endpoints — not built yet
   (Weeks 7, 8).
-- The `TrainingJob` field-name conflict noted above — needs Person A to
-  confirm which shape his endpoint actually returns.
-- Whether `POST /items` accepts `batch_number` with that exact field
-  name — frontend's best guess, unconfirmed. Also whether Person A's
-  validation requires `barcode` (frontend omits it by decision, see
-  above) — if his backend rejects items without one, that needs revisiting.
+- **New:** `/detect`'s actual working status — Person A's own doc admits
+  an unresolved numpy/torch dependency issue and unpushed code (see
+  callout near the top). Worth confirming it's actually resolved and
+  pushed before relying on it as truly live.
+- **New:** whether `batch_number` is really accepted by `POST /items` —
+  the newest "confirmed" example omits it entirely (see `POST /items`
+  section above). Frontend keeps sending it for now; needs a direct
+  answer either way.
+- **New:** Pepsi's AP = 0.000 dataset gap — tracked as Person B's
+  backlog, frontend already flags it in the Checkout UI, just noting it
+  here so it doesn't get lost.
 - Whether shelving (item flipping to `status: "shelved"`) is automatic
   once the accuracy threshold clears, or needs a manual staff-confirm
   step — flagged as an open question in `BillBro_TeamUpdates.md` itself,
   between Person A and Person B.
-- Cumulative vs. fresh-from-base retraining strategy, and the replay
-  strategy for avoiding catastrophic forgetting — Person B's open
-  questions, don't affect the frontend contract but worth tracking since
-  they affect how long training takes / how reliable it is.

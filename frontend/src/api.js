@@ -87,16 +87,20 @@ export const getHealth = () => client.get("/health");
 // ─────────────────────────────────────────────────────────────────────────
 // ADD ITEM / TRAINING — reprioritized as the first feature per
 // BillBro_TeamUpdates.md (item → train → shelve, ahead of checkout in the
-// new build order). Endpoints aren't live on Person A's API yet, but the
-// shapes are reasonably well documented — just from two DOCS THAT DISAGREE
-// WITH EACH OTHER:
-//   - BillBro_TeamUpdates.md's TrainingJob table: { id, item_id, status,
-//     progress, current_epoch, metrics, error_message, created_at, completed_at }
-//   - PERSON_B_DELIVERABLES_ANALYSIS.md's job status file: { job_id, status,
-//     progress, stage, epoch, metrics, updated_at }
-// Different field names for what's presumably the same thing. Until Person
-// A confirms which one his endpoint actually returns, getTrainingJob()'s
-// caller (AddItem.jsx) reads both possible field names defensively.
+// new build order). Endpoints are "ready to build" on Person A's side for
+// Week 2 (POST /training/upload_images, GET /training/job/{id}) but not
+// live yet — calling these will 404 until he ships them.
+//
+// GET /training/job/{id} response shape is now LOCKED, per
+// RESPONSES_TO_PERSON_B_AND_C.md ("Your TrainingJob table alignment: 100%
+// locked"): { id, item_id, status: pending|running|success|failed,
+// progress: 0-100, current_epoch: "2/5"-style string, metrics,
+// error_message, created_at, completed_at }. Note the job's own id field
+// is "id" here — "job_id" only appears in the upload endpoint's response
+// (the id you get back to start polling with). No longer a guess between
+// disagreeing docs; AddItem.jsx's normalizeJobStatus() still reads a
+// couple of alternate field names defensively, which is now just belt-
+// and-suspenders rather than load-bearing.
 // ─────────────────────────────────────────────────────────────────────────
 
 export const uploadTrainingImages = (itemId, files, storeId) => {

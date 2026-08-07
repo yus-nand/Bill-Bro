@@ -19,11 +19,20 @@ const RECOMMENDED_PHOTOS = 15;
 const MIN_PHOTOS = 5;
 const POLL_INTERVAL_MS = 5000;
 
+// Confirmed locked per RESPONSES_TO_PERSON_B_AND_C.md: status is one of
+// pending | running | success | failed. Kept a couple of extra synonyms
+// in these sets (complete/completed/shelved/error) as harmless safety —
+// doesn't hurt if the real value only ever matches the primary one.
 const SUCCESS_STATUSES = new Set(["success", "complete", "completed", "shelved"]);
 const FAILURE_STATUSES = new Set(["failed", "error"]);
 
-// The two docs describing the training job status disagree on field
-// names (see api.js's comment above uploadTrainingImages). Read both.
+// Field names are now locked (RESPONSES_TO_PERSON_B_AND_C.md — Person A's
+// "100% locked" TrainingJob alignment table), not a guess between
+// conflicting docs anymore: status, progress, current_epoch (string like
+// "2/5"), metrics, error_message, created_at, completed_at. Note the
+// job's own id field in this response is called "id", not "job_id" (that
+// name is only used in the upload response). The ?? fallbacks below are
+// kept as harmless extra safety, not because the shape is still unclear.
 function normalizeJobStatus(raw) {
   return {
     status: raw.status,
