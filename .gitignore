@@ -1,0 +1,17 @@
+# Python (original Streamlit prototype)
+__pycache__/
+*.pyc
+.env
+
+# Frontend (frontend/ has its own .gitignore too, this covers root-level slip-ups)
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+*.log
+
+# Stray empty lockfile from an early `npm install` run in the wrong
+# directory (see chat history) — harmless leftover, not needed.
+/package-lock.json
+
+# OS
+.DS_Store
