@@ -33,24 +33,74 @@ to install `ultralytics` for a full runtime test — verify locally). Raises
 `ValueError` on bad base64/image input, which you'll want to catch and
 turn into a 400.
 
-## Training endpoints — `training.py` is ready when you want to wire it up
+## Training endpoints — `training.py` is ready, now aligned to your `TrainingJob` table
 
-`API_CONTRACT.md` lists `POST /training/upload_images` and
-`GET /training/job/{job_id}` as not built yet (Weeks 2-3). `training.py`
-in this folder has the pipeline those endpoints would call into:
+Saw `BillBro_TeamUpdates.md` — Add Item → Train → Shelve is the core loop
+now, and I've updated `training.py` accordingly. `retrain_model()` runs
+auto-labeling → fine-tuning → validation → conditional shelve, and (if you
+pass a `job_id`) mirrors progress to `models/jobs/{job_id}.json` as it
+goes. `read_job_status(job_id)` reads that file back — you could call it
+directly from `GET /training/job/{job_id}` without sharing process memory
+with wherever `retrain_model()` actually runs (thread, process, whatever
+you pick).
 
-- `retrain_model(store_id, item_name, image_paths, base_data_yaml, ..., job_id=...)`
-  — runs auto-labeling → fine-tuning → validation → conditional deploy,
-  and (if you pass a `job_id`) mirrors progress to
-  `models/jobs/{job_id}.json` as it goes.
-- `read_job_status(job_id)` — reads that file back. You could call this
-  directly from `GET /training/job/{job_id}` without needing to share
-  process memory with wherever `retrain_model()` is actually running
-  (background thread, separate process, whatever you pick).
+`JobStatus` now mirrors your `TrainingJob` columns 1:1:
 
-No fixed contract exists yet for this endpoint's response shape (unlike
-`/detect`, which API_CONTRACT.md nailed down) — happy to adjust field
-names in `JobStatus` to match whatever you land on, just flag it.
+| Your table | My `JobStatus` | Notes |
+|---|---|---|
+| `id` | `job_id` | pass whatever id you generate as `job_id=` |
+| `item_id` | `item_id` | pass through from `POST /items` |
+| `status` | `status` | `pending \| running \| success \| failed` |
+| `progress` | `progress` | int 0-100 |
+| `current_epoch` | `current_epoch` | e.g. `"2/5"` |
+| `metrics` | `metrics` | JSON — `mAP50`, `mAP50-95`, `precision`, `recall`, `per_class_AP50` |
+| `error_message` | `error_message` | set on failure |
+| `created_at` | `created_at` | set once, on first write |
+| `completed_at` | `completed_at` | set on success/failure |
+
+Two extra fields beyond your table (`stage`, `model_version`) — ignore if
+you don't need them, they're just nice-to-haves for a progress UI.
+
+`retrain_model()` now also takes `item_id=` so it flows straight into the
+job file — call it like:
+
+```python
+retrain_model(
+    store_id=store_id, item_name=item_name, image_paths=image_paths,
+    base_data_yaml="data.yaml", job_id=job_id, item_id=item.id,
+)
+```
+
+## Resolved: the three coupling points from `BillBro_TeamUpdates.md`
+
+1. **`GET /training/job/{job_id}` shape** — see table above, locked to
+   your `TrainingJob` columns.
+
+2. **Cumulative fine-tuning vs. fresh-from-base each time** — going with
+   **cumulative**: every retrain starts from the store's current active
+   model (`StoreModelManager.active_model_path(store_id)`), not
+   `base_model.pt`. Reasoning: fresh-from-base would mean retraining on
+   *every* item ever shelved, every single time — that stops fitting the
+   15-min latency target after a handful of items. Catastrophic
+   forgetting is instead handled by a new `ReplayPool` (in `training.py`):
+   every successfully shelved item contributes a small image sample
+   (~15 images) to a persistent per-store pool, and every future retrain
+   replays a sample from *every* previously shelved class, not just the
+   original 6. This is the "Replay strategy" your doc flagged as
+   recommended for MVP — it's implemented now, tested with a 3-item
+   simulation (base classes → item 1 → item 2, confirming item 1 gets
+   replayed correctly when item 2 trains).
+
+3. **Automatic vs. manual shelving** — recommending **automatic**:
+   `retrain_model()` already only returns `"status": "success"` if mAP50
+   clears the threshold; treat that as the shelve signal directly
+   (`status="shelved"`), no separate staff-confirm step needed on the ML
+   side. Open to a manual review step in the UI on top of this if the team
+   wants a human in the loop, but the accuracy gate itself doesn't need one.
+
+4. **Accuracy threshold** — confirming **0.80 mAP50** as the shelve gate
+   (`DEFAULT_ACCURACY_THRESHOLD` in `training.py`), matching what the
+   original context doc mentioned.
 
 ## ⚠️ One thing that affects Checkout accuracy directly
 

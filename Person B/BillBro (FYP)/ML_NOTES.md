@@ -1,4 +1,34 @@
-# ML Notes — Person B (Week 1-2)
+# ML Notes — Person B
+
+## Update — build order flipped (per `BillBro_TeamUpdates.md`)
+
+Team decided "Add Item → Train → Shelve" is now the first feature, ahead
+of checkout/billing. Items go `pending → training → shelved` (or
+`failed`), and only `shelved` items are detectable at checkout. This
+session's work responds to that:
+
+- **`ReplayPool`** (new, in `training.py`) — replaces the old "replay from
+  the original 6 base classes only" logic. Now persistent per-store: every
+  time an item is successfully shelved, a sample of its own images joins
+  the pool, so every future retrain protects *all* previously shelved
+  items, not just the launch classes. Tested with a 3-generation
+  simulation (base → item 1 → item 2), confirming item 1 gets correctly
+  replayed (and remapped to its class id) when item 2 trains.
+- **`JobStatus`** fields renamed to match Person A's new `TrainingJob`
+  table exactly (`item_id`, `current_epoch`, `error_message`,
+  `created_at`, `completed_at`) — see `CONTEXT_FOR_PERSON_A.md` for the
+  full mapping table.
+- Three open decisions from the team doc answered and documented in
+  `CONTEXT_FOR_PERSON_A.md`: cumulative fine-tuning (yes, from the
+  store's current model, not fresh-from-base), automatic shelving (yes,
+  the mAP50 gate already implemented is the shelve signal), and the 0.80
+  mAP50 threshold (confirmed as-is).
+- `barcode` / `batch_number` are new `Item` fields — Person A's schema,
+  no ML-side action needed.
+
+---
+
+# Original notes (Week 1-2)
 
 ## What was broken
 

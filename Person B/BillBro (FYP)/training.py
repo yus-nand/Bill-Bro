@@ -152,32 +152,196 @@ def _load_rgb(image_path: str):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 2 — Dataset assembly (new item + replay sample of old classes)
+# Replay pool — persistent, grows with every shelved item
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ReplayPool:
+    """Per-store replay buffer, used to fight catastrophic forgetting.
+
+    Since "Add Item -> Train -> Shelve" is now the core loop (not a
+    Week-4 add-on per BillBro_TeamUpdates.md), a store's class list grows
+    one item at a time, indefinitely. A replay buffer that only knew about
+    the original 6 base classes would stop protecting older *shelved*
+    items the moment a second custom item gets added. This pool fixes
+    that: every time an item is successfully shelved, a small sample of
+    its own labeled images is added to the pool, so every future retrain
+    replays ALL previously shelved classes, not just the original 6.
+
+    On-disk layout:
+        training_data/{store_id}/replay_pool/
+            classes.json                — ordered list of class names
+            {class_name}/images/*.jpg
+            {class_name}/labels/*.txt   — YOLO format, class_id 0 always
+                                           (this class's own local id;
+                                           prepare_finetune_dataset()
+                                           remaps to the current run's ids)
+    """
+
+    def __init__(self, store_id: str, base_dir: str = "training_data") -> None:
+        self.store_id = store_id
+        self.root = Path(base_dir) / store_id / "replay_pool"
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.registry_path = self.root / "classes.json"
+
+    def class_names(self) -> list[str]:
+        """Ordered list of every class currently in the pool."""
+        if not self.registry_path.exists():
+            return []
+        return json.loads(self.registry_path.read_text())["names"]
+
+    def bootstrap_from_base(self, base_data_yaml: str, samples_per_class: int = 30) -> None:
+        """One-time seed: sample the original base model's classes into the pool.
+
+        No-op if the pool has already been bootstrapped (registry exists) —
+        safe to call at the top of every retrain_model() run.
+
+        Args:
+            base_data_yaml: The base model's data.yaml.
+            samples_per_class: How many images per base class to seed with.
+        """
+        if self.registry_path.exists():
+            return
+
+        with open(base_data_yaml) as f:
+            base_cfg = yaml.safe_load(f)
+
+        base_names: list[str] = list(base_cfg["names"])
+        base_root = Path(base_cfg["path"])
+        base_train_images = base_root / base_cfg["train"]
+        base_train_labels = base_train_images.parent / "labels"
+
+        by_class: dict[int, list[Path]] = {i: [] for i in range(len(base_names))}
+        if base_train_labels.exists():
+            for label_file in base_train_labels.glob("*.txt"):
+                lines = label_file.read_text().splitlines()
+                if not lines:
+                    continue
+                cls_id = int(lines[0].split()[0])
+                if cls_id in by_class:
+                    by_class[cls_id].append(label_file)
+
+        for cls_id, name in enumerate(base_names):
+            label_files = by_class.get(cls_id, [])
+            sample = random.sample(label_files, min(samples_per_class, len(label_files)))
+            self._write_class_samples(name, [
+                (self._sibling_image(lf, base_train_images), lf) for lf in sample
+            ], remap_class_id=0)
+
+        self.registry_path.write_text(json.dumps({"names": base_names}, indent=2))
+
+    def add_class_samples(
+        self,
+        item_name: str,
+        labeled_images_dir: str,
+        sample_size: int = 15,
+    ) -> None:
+        """Add a sample of a newly shelved item's own images to the pool.
+
+        Call this once retrain_model() has confirmed the new item cleared
+        the accuracy threshold — future retrains will now replay it too.
+
+        Args:
+            item_name: The class name to register (idempotent — if it's
+                already in the pool, its samples are refreshed).
+            labeled_images_dir: The auto_label_images() output dir for
+                this item (has images/ and labels/, class_id 0 throughout).
+            sample_size: How many of this item's images to keep long-term.
+        """
+        src = Path(labeled_images_dir)
+        images = sorted((src / "images").glob("*"))
+        sample = random.sample(images, min(sample_size, len(images)))
+        pairs = [(img, src / "labels" / f"{img.stem}.txt") for img in sample]
+        self._write_class_samples(item_name, pairs, remap_class_id=0)
+
+        names = self.class_names()
+        if item_name not in names:
+            names.append(item_name)
+            self.registry_path.write_text(json.dumps({"names": names}, indent=2))
+
+    def sample_for_replay(
+        self,
+        exclude: str | None = None,
+        per_class: int = OLD_CLASS_SAMPLES_PER_CLASS,
+    ) -> dict[str, list[tuple[Path, Path]]]:
+        """Return a sample of (image_path, label_path) pairs per pooled class.
+
+        Args:
+            exclude: Class name to skip (typically the item currently
+                being trained, to avoid double-counting it).
+            per_class: Max images to return per class.
+
+        Returns:
+            {class_name: [(image_path, label_path), ...]}
+        """
+        result: dict[str, list[tuple[Path, Path]]] = {}
+        for name in self.class_names():
+            if name == exclude:
+                continue
+            class_dir = self.root / name
+            images = sorted((class_dir / "images").glob("*"))
+            sample = random.sample(images, min(per_class, len(images)))
+            result[name] = [
+                (img, class_dir / "labels" / f"{img.stem}.txt") for img in sample
+            ]
+        return result
+
+    def _write_class_samples(
+        self,
+        class_name: str,
+        pairs: list[tuple[Path, Path]],
+        remap_class_id: int,
+    ) -> None:
+        class_dir = self.root / class_name
+        (class_dir / "images").mkdir(parents=True, exist_ok=True)
+        (class_dir / "labels").mkdir(parents=True, exist_ok=True)
+        for img_path, label_path in pairs:
+            if img_path is None or not label_path.exists():
+                continue
+            shutil.copy(img_path, class_dir / "images" / img_path.name)
+            lines = []
+            for line in label_path.read_text().splitlines():
+                parts = line.split()
+                if len(parts) < 5:
+                    continue
+                lines.append(" ".join([str(remap_class_id), *parts[1:]]))
+            (class_dir / "labels" / f"{img_path.stem}.txt").write_text("\n".join(lines) + "\n")
+
+    @staticmethod
+    def _sibling_image(label_path: Path, images_dir: Path) -> Path | None:
+        candidates = list(images_dir.glob(f"{label_path.stem}.*"))
+        return candidates[0] if candidates else None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 2 — Dataset assembly (new item + replay sample of ALL shelved classes)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def prepare_finetune_dataset(
     item_name: str,
     auto_labeled_dir: str,
-    base_data_yaml: str,
+    replay_pool: "ReplayPool",
     output_dir: str,
     samples_per_old_class: int = OLD_CLASS_SAMPLES_PER_CLASS,
     val_holdout: int = 3,
 ) -> str:
-    """Assemble a small YOLO dataset combining the new item with old classes.
+    """Assemble a small YOLO dataset: the new item + a replay sample of
+    every previously shelved class (base classes + any custom items added
+    since).
 
     Fine-tuning on ONLY the new item's images would let the model forget
-    the other 6 classes (catastrophic forgetting). We counter this with a
-    replay buffer: a random sample of each existing class's training
-    images, copied in alongside the new item.
+    everything shelved before it (catastrophic forgetting) — confirmed as
+    the recommended MVP strategy in BillBro_TeamUpdates.md. This pulls the
+    replay sample from `replay_pool`, which grows every time an item is
+    successfully shelved (see ReplayPool.add_class_samples), rather than
+    a fixed one-time base dataset.
 
     Args:
         item_name: The new item's class name.
         auto_labeled_dir: Output of auto_label_images() — has images/ and
             labels/ subdirs, with placeholder class_id 0 in every label.
-        base_data_yaml: The base model's data.yaml (has the old classes'
-            train/images path and names list).
+        replay_pool: A ReplayPool already bootstrapped for this store.
         output_dir: Where to write the merged dataset.
-        samples_per_old_class: How many old-class images to replay.
+        samples_per_old_class: How many images per old class to replay.
         val_holdout: How many of the new item's own images to hold out
             for validation (rest go to train).
 
@@ -188,10 +352,7 @@ def prepare_finetune_dataset(
         ValueError: If auto_labeled_dir has fewer images than val_holdout + 1
             (nothing left to train on after the validation split).
     """
-    with open(base_data_yaml) as f:
-        base_cfg = yaml.safe_load(f)
-
-    old_names: list[str] = list(base_cfg["names"])
+    old_names = replay_pool.class_names()
     new_class_id = len(old_names)
     all_names = old_names + [item_name]
 
@@ -228,31 +389,25 @@ def prepare_finetune_dataset(
                 "\n".join(remapped_lines) + "\n"
             )
 
-    # ── Replay buffer: sample old classes from the base dataset's train split
-    base_root = Path(base_cfg["path"])
-    base_train_images = base_root / base_cfg["train"]
-    base_train_labels = base_train_images.parent / "labels"
-
-    by_class: dict[int, list[Path]] = {i: [] for i in range(len(old_names))}
-    if base_train_labels.exists():
-        for label_file in base_train_labels.glob("*.txt"):
-            first_line = label_file.read_text().splitlines()
-            if not first_line:
-                continue
-            cls_id = int(first_line[0].split()[0])
-            if cls_id in by_class:
-                by_class[cls_id].append(label_file)
-
+    # ── Replay buffer: pull a sample of every previously shelved class
     replayed = 0
-    for cls_id, label_files in by_class.items():
-        sample = random.sample(label_files, min(samples_per_old_class, len(label_files)))
-        for label_file in sample:
-            img_candidates = list(base_train_images.glob(f"{label_file.stem}.*"))
-            if not img_candidates:
+    replay_samples = replay_pool.sample_for_replay(exclude=item_name, per_class=samples_per_old_class)
+    for cls_id, name in enumerate(old_names):
+        for img_path, label_path in replay_samples.get(name, []):
+            if not label_path.exists():
                 continue
-            img_path = img_candidates[0]
             shutil.copy(img_path, out / "train" / "images" / img_path.name)
-            shutil.copy(label_file, out / "train" / "labels" / label_file.name)
+            lines = []
+            for line in label_path.read_text().splitlines():
+                parts = line.split()
+                if len(parts) < 5:
+                    continue
+                # Pool stores everything as local class_id 0 -> remap to
+                # this run's actual id for `name`.
+                lines.append(" ".join([str(cls_id), *parts[1:]]))
+            (out / "train" / "labels" / f"{img_path.stem}.txt").write_text(
+                "\n".join(lines) + "\n"
+            )
             replayed += 1
 
     data_yaml_path = out / "data.yaml"
@@ -267,8 +422,8 @@ def prepare_finetune_dataset(
 
     print(
         f"Dataset ready: {len(train_imgs)} new-item train images, "
-        f"{len(val_imgs)} val images, {replayed} replayed old-class images "
-        f"across {len(old_names)} classes."
+        f"{len(val_imgs)} val images, {replayed} replayed images across "
+        f"{len(old_names)} previously shelved classes."
     )
 
     return str(data_yaml_path)
@@ -289,50 +444,68 @@ def retrain_model(
     freeze: int = DEFAULT_FREEZE_LAYERS,
     accuracy_threshold: float = DEFAULT_ACCURACY_THRESHOLD,
     job_id: str | None = None,
+    item_id: int | str | None = None,
 ) -> dict[str, Any]:
-    """Full pipeline: auto-label -> assemble dataset -> fine-tune -> validate -> deploy.
+    """Full pipeline: auto-label -> assemble dataset -> fine-tune -> validate -> shelve.
 
-    Mirrors the API contract in the project spec's GET /training/job/{job_id}:
-    returns {"status": "success", ...} or {"status": "failed", "reason": ...}.
-    If job_id is given, progress is also mirrored to
-    models/jobs/{job_id}.json so an API layer can poll it independently of
-    this function's return value (useful when called from a background
-    thread).
+    Implements the "Add Item -> Train -> Shelve" loop from
+    BillBro_TeamUpdates.md — this is the core feature now, not a Week-4
+    add-on. Two build-order decisions from that doc are resolved here
+    (see CONTEXT_FOR_PERSON_A.md for the write-up):
+      - Cumulative fine-tuning: always starts from the store's current
+        active model (via StoreModelManager), not fresh from base_model.pt
+        each time. Faster, and the replay pool (below) controls forgetting.
+      - Automatic shelving: this function IS the gate — "success" means
+        "clear to shelve", "failed" means stay in "training"/"failed"
+        status. No separate manual-confirm step is assumed on the ML side.
+
+    Mirrors Person A's TrainingJob table shape (id, item_id, status,
+    progress, current_epoch, metrics, error_message, created_at,
+    completed_at) via the job status file, if job_id is given — an API
+    layer can poll read_job_status(job_id) independently of this
+    function's return value (useful when called from a background thread).
 
     Args:
         store_id: Store identifier, e.g. "store_001".
         item_name: New item's class name (lowercase, underscored).
         image_paths: Paths to the staff-captured photos of the new item.
-        base_data_yaml: data.yaml describing the store's current classes.
-        models_dir: Where StoreModelManager reads/writes versioned models.
+        base_data_yaml: data.yaml describing the base model's classes —
+            only used to bootstrap the replay pool the first time a store
+            trains anything; ignored on every call after that.
+        models_dir: Where StoreModelManager and ReplayPool keep state.
         work_dir: Scratch space for auto-labeling and dataset assembly.
         epochs: Fine-tune epochs (default 5, per 15-min latency target).
         freeze: Number of leading layers to freeze (backbone), reducing
             both training time and catastrophic forgetting risk.
-        accuracy_threshold: Minimum mAP50 to auto-deploy; below this,
-            the run fails and asks for more images instead of shipping a
-            weak model.
+        accuracy_threshold: Minimum mAP50 to shelve; below this, the item
+            stays unshelved and the run reports why.
         job_id: Optional job id for status file mirroring.
+        item_id: Optional item id (Person A's Item.id) — threaded through
+            to the job status file so GET /training/job/{job_id} can join
+            back to the item without a name lookup.
 
     Returns:
         On success:
-          {"status": "success", "store_id", "item_name", "version",
-           "metrics": {...}, "model_path": str}
+          {"status": "success", "store_id", "item_name", "item_id",
+           "version", "metrics": {...}, "model_path": str}
         On failure:
           {"status": "failed", "reason": str, "metrics": {...} | None}
     """
     manager = StoreModelManager(models_dir=models_dir)
     current_model_path = manager.active_model_path(store_id)
 
-    _update_job(job_id, status="running", progress=5, stage="auto_labeling")
+    pool = ReplayPool(store_id, base_dir=str(Path(models_dir) / ".." / "training_data"))
+    pool.bootstrap_from_base(base_data_yaml)
+
+    _update_job(job_id, status="running", progress=5, stage="auto_labeling", item_id=item_id)
 
     detector = GroceryDetector(current_model_path)
     label_dir = str(Path(work_dir) / f"{store_id}_{item_name}_labels")
     labeling_result = auto_label_images(image_paths, detector, item_name, label_dir)
 
     if len(labeling_result["labeled"]) < 5:
-        _update_job(job_id, status="failed", progress=10,
-                     reason="Too few usable images after auto-labeling")
+        _update_job(job_id, status="failed", progress=10, item_id=item_id,
+                     error_message="Too few usable images after auto-labeling")
         return {
             "status": "failed",
             "reason": (
@@ -343,17 +516,18 @@ def retrain_model(
             "metrics": None,
         }
 
-    _update_job(job_id, status="running", progress=25, stage="dataset_prep")
+    _update_job(job_id, status="running", progress=25, stage="dataset_prep", item_id=item_id)
 
     dataset_dir = str(Path(work_dir) / f"{store_id}_{item_name}_dataset")
     data_yaml_path = prepare_finetune_dataset(
         item_name=item_name,
         auto_labeled_dir=labeling_result["output_dir"],
-        base_data_yaml=base_data_yaml,
+        replay_pool=pool,
         output_dir=dataset_dir,
     )
 
-    _update_job(job_id, status="running", progress=35, stage="training", epoch=f"0/{epochs}")
+    _update_job(job_id, status="running", progress=35, stage="training",
+                current_epoch=f"0/{epochs}", item_id=item_id)
 
     model = YOLO(current_model_path)
     run_name = f"{store_id}_{item_name}_{_timestamp_slug()}"
@@ -374,7 +548,7 @@ def retrain_model(
         copy_paste=0.0,
     )
 
-    _update_job(job_id, status="running", progress=85, stage="validating")
+    _update_job(job_id, status="running", progress=85, stage="validating", item_id=item_id)
 
     best_weights = Path(work_dir) / "runs" / run_name / "weights" / "best.pt"
     val_model = YOLO(str(best_weights))
@@ -396,12 +570,13 @@ def retrain_model(
 
     if map50 < accuracy_threshold:
         _update_job(job_id, status="failed", progress=100, metrics=result_metrics,
-                     reason=f"mAP50 {map50:.2f} below threshold {accuracy_threshold:.2f}")
+                     item_id=item_id,
+                     error_message=f"mAP50 {map50:.2f} below threshold {accuracy_threshold:.2f}")
         return {
             "status": "failed",
             "reason": (
                 f"mAP50 {map50:.2f} is below the {accuracy_threshold:.2f} "
-                f"deploy threshold. Capture 30+ more images of '{item_name}' "
+                f"shelving threshold. Capture 30+ more images of '{item_name}' "
                 "and retry — auto-labeling from a single-item frame works "
                 "best with varied angles and backgrounds."
             ),
@@ -416,13 +591,19 @@ def retrain_model(
         deploy=True,
     )
 
+    # Item cleared the bar — add it to the replay pool so it's protected
+    # in every future retrain, then it's clear to shelve.
+    pool.add_class_samples(item_name, labeling_result["output_dir"])
+
     _update_job(job_id, status="success", progress=100, metrics=result_metrics,
-                model_version=version_record.version)
+                item_id=item_id, model_version=version_record.version,
+                completed_at=datetime.now(timezone.utc).isoformat())
 
     return {
         "status": "success",
         "store_id": store_id,
         "item_name": item_name,
+        "item_id": item_id,
         "version": version_record.version,
         "metrics": result_metrics,
         "model_path": version_record.model_path,
@@ -449,14 +630,24 @@ def _timestamp_slug() -> str:
 
 @dataclass
 class JobStatus:
+    """Mirrors Person A's TrainingJob table columns exactly (see
+    BillBro_TeamUpdates.md): id, item_id, status, progress, current_epoch,
+    metrics, error_message, created_at, completed_at. `job_id` maps to
+    their `id`; `stage` and `model_version` are extras beyond that table,
+    harmless to ignore if unused.
+    """
+
     job_id: str
     status: str = "pending"  # pending | running | success | failed
     progress: int = 0
-    stage: str | None = None
-    epoch: str | None = None
+    item_id: int | str | None = None
+    stage: str | None = None  # extra: auto_labeling | dataset_prep | training | validating
+    current_epoch: str | None = None
     metrics: dict[str, Any] | None = None
-    reason: str | None = None
-    model_version: str | None = None
+    error_message: str | None = None
+    model_version: str | None = None  # extra: set once shelved
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    completed_at: str | None = None
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
@@ -467,15 +658,25 @@ def _jobs_dir(models_dir: str = "models") -> Path:
 
 
 def _update_job(job_id: str | None, **fields: Any) -> None:
-    """Write/merge job status to models/jobs/{job_id}.json. No-op if job_id is None."""
+    """Write/merge job status to models/jobs/{job_id}.json. No-op if job_id is None.
+
+    Field names match JobStatus / Person A's TrainingJob table. `created_at`
+    is set once on the job's first write and never overwritten;
+    `updated_at` changes on every call; `completed_at` is left untouched
+    unless the caller explicitly passes it (i.e. on success/failure).
+    """
     if job_id is None:
         return
     path = _jobs_dir() / f"{job_id}.json"
     existing = {}
-    if path.exists():
+    is_new = not path.exists()
+    if not is_new:
         existing = json.loads(path.read_text())
+
     existing.update({k: v for k, v in fields.items() if v is not None})
     existing["job_id"] = job_id
+    if is_new:
+        existing["created_at"] = datetime.now(timezone.utc).isoformat()
     existing["updated_at"] = datetime.now(timezone.utc).isoformat()
     path.write_text(json.dumps(existing, indent=2))
 
