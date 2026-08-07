@@ -1,68 +1,85 @@
 # BillBro — Backend Context (for Person A's Claude)
 
 Paste this into your own Claude chat/project for context on where things
-stand with the frontend. Thanks for closing out all the open items —
-Checkout, Inventory, and Alerts are all genuinely working now.
+stand with the frontend.
 
 ## Code is pushed — you can look at it directly
 
-Frontend is committed and pushed to `Person-C` on GitHub:
-`https://github.com/yus-nand/Bill-Bro/tree/Person-C` (commit `frontend-1`).
-`frontend/src/api.js` is the actual client code calling your endpoints if
-you want to sanity-check anything against real requests rather than my
-notes. `API_CONTRACT.md` at the repo root is the living doc of what's
-confirmed vs. still open.
+Frontend is on `Person-C` on GitHub:
+`https://github.com/yus-nand/Bill-Bro/tree/Person-C` (latest commit
+`frontend-2`). `frontend/src/api.js` is the actual client code calling
+your endpoints. `API_CONTRACT.md` at the repo root is the living doc of
+what's confirmed vs. still open — check that first before re-explaining
+anything, it's kept current.
 
-## Everything's resolved — nothing blocking right now
+## Checkout, Inventory, Alerts: done, live, working
 
-- **`POST /detect`** — built to spec, integrated into Checkout. Frontend
-  sends base64 image, gets back detections, aggregates them, sends to
-  `/checkout/bill`.
-- **CORS, `/items` vs `/inventory`, `/alerts/{id}` body, `POST /items`
-  shape, `/models/active`, `/health`** — all confirmed and either
-  integrated or ready to wire up when those pages get built.
+Confirmed via your `FOR_PERSON_C_CHECKOUT_INTEGRATION.md` that `/detect`
+is actually live (not just spec'd) — Checkout is fully wired end to end:
+photo → `/detect` → staff-editable quantities → `/checkout/bill` →
+receipt rendered straight from your response. Inventory and Alerts are
+live against `/inventory` and `/alerts`. Timeout on `/detect` was
+originally set defensively at 3 minutes based on Person B's "~2min on
+CPU" worst case, then dialed back to 30 seconds once your doc reported
+real measured latency (~2-3s cold start, ~100-200ms after). No open
+issues on any of these three.
 
-Next on my end is running the whole thing live against your actual API
-(not just code review) — photo → detect → bill, end to end. I'll let you
-know if anything about the real responses doesn't match what the docs
-said.
+## Add Item is fully built too — ahead of your endpoints
 
-Two small things whenever convenient, not blocking anything:
+Per `BillBro_TeamUpdates.md`, Add Item got reprioritized as the
+first-feature loop (item → train → shelve) rather than a Week 4 add-on. I
+built the whole frontend flow ahead of your backend landing: details form
+→ photo capture (15 recommended, 5 min) → `POST /training/upload_images`
+→ polls `GET /training/job/{id}` every 5s → shelved/failed result
+screen. It'll error on submit until those two endpoints exist — expected,
+built ahead of time on purpose so testing can start the moment you ship
+them.
 
-## 1. Minor doc inconsistency (not urgent)
+**One decision you should know about: `barcode` was dropped from the
+item form.** `BillBro_TeamUpdates.md` listed it as a new field alongside
+`batch_number`, but most of the actual catalog (apple, banana, dragon
+fruit, custard apple) is loose produce that doesn't have real scannable
+barcodes at retail, and there's no scanner integration built — so it
+would've just been an unreliable manually-typed field. `batch_number`
+is still sent. **If your `POST /items` validation requires `barcode`,
+item creation will start failing the moment we test against it** — worth
+telling me now if that's the case, cheap to add back if needed.
 
-Your first doc said `/items` has no stock info (`/inventory` is separate
-for that). A later section said `GET /items` "Response: List of items with
-current_count... Use for: ...inventory page." Those don't match — I've
-kept the Inventory page on `/inventory` since that's been explicitly
-confirmed multiple times as the right one, but wanted to flag the
-inconsistency in case it's a sign of a different underlying discrepancy
-(e.g. does `/items` actually return current_count now and the example
-response is just stale?).
+## 🚩 Possible mismatch worth a quick sync
 
-## 2. `FRONTEND_INTEGRATION_GUIDE.md`
+Your `FOR_PERSON_C_CHECKOUT_INTEGRATION.md` frames Checkout as Week 1 and
+Add Item as "Week 2 Preview" — the original order. `BillBro_TeamUpdates.md`
+says Add Item comes first, ahead of checkout. Not sure which is actually
+current on your end, or if you've seen the team update doc. Doesn't block
+me either way (both are built), but figured you'd want to know the two
+docs disagree.
 
-You've referenced this a few times as having CORS config, deployment
-steps, etc., but it's listed as living at
-`C:\Users\Admin\Desktop\BE Project\...` on your machine — I don't think
-it's actually been shared yet. Send it over whenever, no rush, mostly
-curious if there's deployment guidance in there I should know about ahead
-of picking an nginx target.
+## Smaller open items, no rush
+
+1. **`/items` vs `/inventory` doc inconsistency** — one of your docs said
+   `/items` has no stock info, another said it "includes current_count."
+   Inventory page uses `/inventory` regardless (confirmed correct
+   multiple times), just flagging in case it points at something else
+   being off.
+2. **`FRONTEND_INTEGRATION_GUIDE.md`** — referenced a few times, still
+   don't think it's actually been shared. Send whenever, mostly curious
+   if there's deployment guidance in there ahead of picking an nginx
+   target.
+3. **`POST /items` request body** — I'm guessing at `batch_number` as the
+   field name since it wasn't in your original examples. Confirm once the
+   endpoint exists.
+4. **`GET /training/job/{id}` shape** — two of your/Person B's docs
+   disagree on field names (`current_epoch` vs `epoch`,
+   `error_message` vs `reason`, etc.). Frontend reads both defensively
+   for now, but worth confirming which one your endpoint actually
+   returns so I can simplify.
 
 ## What's next on my end
 
-1. Live end-to-end test of Checkout against your real API (today).
-2. Building out Add Item once your training endpoints
-   (`POST /training/upload_images`, `GET /training/job/{id}`) land — no
-   rush, I know that's Week 2-3 for you. Same for Admin (Week 7) and the
-   fuller Models page (Week 8).
-3. Picking an nginx deploy target — still just a config file
-   (`frontend/nginx.conf`) right now, not an actual running deployment.
-
-One thing worth a heads-up if you talk to Person B before I do: detection
-*accuracy* in Checkout depends on the model conversion
-(`billbro_v3.onnx` → `.pt`) landing — the endpoint itself works regardless,
-but worth knowing if that's still pending on their end.
+1. Whatever comes back on the barcode/build-order questions above.
+2. nginx deploy target still not picked — `frontend/nginx.conf` is ready,
+   just not pointed at anything real yet.
+3. Testing Add Item for real once your training endpoints exist.
 
 ## How to respond
 
