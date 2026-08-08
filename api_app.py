@@ -13,6 +13,7 @@ from functools import lru_cache
 from pydantic import BaseModel
 import json
 import os
+import re
 import threading
 import uuid
 from pathlib import Path
@@ -30,6 +31,26 @@ try:
     TRAINING_AVAILABLE = True
 except ImportError:
     TRAINING_AVAILABLE = False
+
+
+def _normalize_name(s: str) -> str:
+    """Normalize a name for matching an ML-provided class name against
+    Item.name — strips everything except lowercase alphanumerics.
+
+    Item.name is human-entered Title Case with spaces ("Diet Coke",
+    "Dragon Fruit"); detection class names are the model's raw labels
+    ("diet_coke", "dragonfruit" — note: no separator at all for
+    dragonfruit specifically, per how the training dataset was labeled,
+    not a typo). A plain space<->underscore swap doesn't reconcile that
+    last case, so this strips ALL non-alphanumerics on both sides instead:
+    "Dragon Fruit", "dragon_fruit", and "dragonfruit" all normalize to
+    the same string. Use this anywhere a raw detection/class name gets
+    compared against Item.name — not needed for anything keyed by
+    item_id (Inventory, Alerts), only where a name string crosses that
+    boundary.
+    """
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
 
 # ============================================================================
 # Setup
@@ -403,11 +424,19 @@ def process_checkout(
         confidence = detection.get('confidence', 1.0)
         quantity = detection.get('quantity', 1)
 
-        # Find item
-        item = db.query(Item).filter(
-            Item.store_id == store_id,
-            Item.name.ilike(item_name)
-        ).first()
+        # Find item. NOT a simple ilike() match — Item.name is human
+        # Title Case ("Diet Coke", "Dragon Fruit") but item_name here is
+        # the model's raw class name ("diet_coke", "dragonfruit" — no
+        # separator at all in that last one). ilike() can't reconcile
+        # either mismatch, which silently dropped every single detected
+        # item from every checkout until this fix. Fetching a store's
+        # items and comparing normalized names in Python is fine at this
+        # scale (a handful to a few dozen items per store).
+        candidates = db.query(Item).filter(Item.store_id == store_id).all()
+        item = next(
+            (c for c in candidates if _normalize_name(c.name) == _normalize_name(item_name)),
+            None,
+        )
 
         if not item:
             continue
