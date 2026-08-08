@@ -3,10 +3,8 @@
 // item details → capture photos → train → shelve. An item only becomes
 // checkout-detectable once it's "shelved" (training succeeded).
 //
-// Endpoints aren't live on Person A's API yet (see api.js), so this will
-// error out until POST /items, POST /training/upload_images, and
-// GET /training/job/{id} exist — built ahead of time so it's ready the
-// moment they land.
+// All three endpoints (POST /items, POST /training/upload_images,
+// GET /training/job/{id}) are live on Person A's side now.
 
 import { useEffect, useRef, useState } from "react";
 import PageShell from "../components/PageShell.jsx";
@@ -18,6 +16,18 @@ import { STORE_ID, API_BASE_URL } from "../config.js";
 const RECOMMENDED_PHOTOS = 15;
 const MIN_PHOTOS = 5;
 const POLL_INTERVAL_MS = 5000;
+
+// training.py uses this directly as the new model class label (e.g.
+// "Maggi Noodles" -> "maggi_noodles") — found missing entirely during a
+// backend audit; uploadTrainingImages() never sent it before, which
+// would have 422'd instantly since the backend requires it.
+function toClassName(name) {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
 
 // Confirmed locked per RESPONSES_TO_PERSON_B_AND_C.md: status is one of
 // pending | running | success | failed. Kept a couple of extra synonyms
@@ -44,10 +54,15 @@ function normalizeJobStatus(raw) {
   };
 }
 
+// barcode and batch_number were both once planned fields (per
+// BillBro_TeamUpdates.md) but neither survived contact with the real
+// backend: barcode was dropped by frontend decision (see api.js), and
+// batch_number was confirmed by Person A (reading database.py directly,
+// via SYNC_FOR_PERSON_C.md) to not exist as a column on the items table
+// at all — so it's gone from the form too now.
 const emptyForm = {
   name: "",
   sku: "",
-  batch_number: "",
   price: "",
   category: "",
   expiry_date: "",
@@ -120,7 +135,6 @@ export default function AddItem() {
         low_stock_threshold: form.low_stock_threshold
           ? Number(form.low_stock_threshold)
           : 5,
-        ...(form.batch_number && { batch_number: form.batch_number.trim() }),
         ...(form.category && { category: form.category.trim() }),
         ...(form.expiry_date && { expiry_date: form.expiry_date }),
       };
@@ -189,6 +203,7 @@ export default function AddItem() {
     try {
       const res = await uploadTrainingImages(
         itemId,
+        toClassName(form.name),
         images.map((img) => img.file),
         STORE_ID
       );
@@ -248,10 +263,6 @@ export default function AddItem() {
                 onChange={updateField("price")}
                 required
               />
-            </label>
-            <label className="bb-form-field">
-              <span>Batch number</span>
-              <input value={form.batch_number} onChange={updateField("batch_number")} />
             </label>
             <label className="bb-form-field">
               <span>Category</span>

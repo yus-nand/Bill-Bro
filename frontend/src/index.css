@@ -727,6 +727,30 @@ body {
   border-color: var(--accent);
 }
 
+/* ─── Inventory restock (inline row form) ────────────────────────────── */
+
+.bb-restock-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 14px;
+  padding: 12px 4px;
+}
+
+.bb-restock-form .bb-form-field {
+  min-width: 140px;
+}
+
+.bb-restock-form .bb-form-error {
+  flex-basis: 100%;
+  margin-bottom: 0;
+}
+
+.bb-btn-small {
+  padding: 6px 12px;
+  font-size: 12.5px;
+}
+
 /* ─── Image capture grid (Add Item) ──────────────────────────────────── */
 
 .bb-image-grid {

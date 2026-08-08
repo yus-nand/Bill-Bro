@@ -21,18 +21,44 @@ export const client = axios.create({
 // ─────────────────────────────────────────────────────────────────────────
 
 // ── Items (product catalog — static info: name, sku, price, category) ────
-// Per BillBro_TeamUpdates.md, items also carry `batch_number`, and
-// creation starts an item at status "pending" — it only becomes
-// checkout-detectable once training succeeds and it's flipped to
-// "shelved" (see the Add Item flow below). `barcode` was in the original
-// schema note too, but was dropped from the frontend by decision — most
-// of the catalog is loose produce that doesn't have real scannable
-// barcodes, and manual text entry (no scanner integration exists) isn't
-// reliable enough to be worth the field. SKU remains the trustworthy
-// unique identifier.
+// Per BillBro_TeamUpdates.md, creation starts an item at status "pending"
+// — it only becomes checkout-detectable once training succeeds and it's
+// flipped to "shelved" (see the Add Item flow below).
+//
+// `barcode` — dropped from the frontend by decision, confirmed not part
+// of the real schema. Most of the catalog is loose produce with no real
+// scannable barcode, and there's no scanner integration, so manual text
+// entry wasn't worth it. SKU remains the trustworthy unique identifier.
+//
+// `batch_number` / `batch_arrival_date` — these WERE briefly confirmed
+// removed (SYNC_FOR_PERSON_C.md said no such column existed), but are
+// back for real now, found directly in Person A's pushed database.py
+// and api_app.py: both are genuine optional columns on `items`. Per his
+// own code comments, they're really meant for the new
+// PATCH /items/{id}/restock flow below (batch tracking for restocking an
+// existing item), not initial creation — CreateItemRequest accepts them
+// as optional but nothing in his docs suggests Add Item needs to send
+// them. Deliberately NOT re-added to the Add Item form for that reason —
+// see restockItem() instead.
 export const getItems = () => client.get("/items");
 export const getItem = (id) => client.get(`/items/${id}`);
+// Sends a JSON body, matching the docs — this was previously broken on
+// Person A's side (his handler took scalar args, which FastAPI reads as
+// query params, not a JSON body — every real submit would 422). Fixed
+// and pushed per SYNC_FOR_PERSON_C.md; no frontend change was needed.
 export const createItem = (item) => client.post("/items", item);
+// New endpoint, found directly in api_app.py — "a new batch of an
+// existing item arrived" (POST /items can't handle this case since sku
+// is unique). Overwrites the item's current batch_number/batch_arrival_date
+// (no per-batch history — items:inventory is 1:1) and adds quantity_added
+// to stock. batchNumber/batchArrivalDate are optional; omit either to
+// leave that field untouched.
+export const restockItem = (id, quantityAdded, batchNumber, batchArrivalDate) =>
+  client.patch(`/items/${id}/restock`, {
+    quantity_added: quantityAdded,
+    ...(batchNumber && { batch_number: batchNumber }),
+    ...(batchArrivalDate && { batch_arrival_date: batchArrivalDate }),
+  });
 
 // ── Inventory (stock levels — dynamic, changes with each sale) ──────────
 // Confirmed shape: [{ id, name, sku, price, current_count,
@@ -103,9 +129,18 @@ export const getHealth = () => client.get("/health");
 // and-suspenders rather than load-bearing.
 // ─────────────────────────────────────────────────────────────────────────
 
-export const uploadTrainingImages = (itemId, files, storeId) => {
+// Found during a full backend audit: this call was missing `item_name`
+// entirely — the endpoint requires it (no default) and uses it directly
+// as the new class label, so every real call would have 422'd with
+// "field required" before a single photo got processed. Also fixed on
+// Person A's side: item_id/item_name/store_id are now properly declared
+// as Form() fields (they previously had no Form()/Body() annotation at
+// all, so FastAPI was reading them as query params instead of the
+// multipart form fields actually being sent here).
+export const uploadTrainingImages = (itemId, itemName, files, storeId) => {
   const form = new FormData();
   form.append("item_id", itemId);
+  form.append("item_name", itemName);
   if (storeId) form.append("store_id", storeId);
   files.forEach((f) => form.append("images", f));
   return client.post("/training/upload_images", form, {

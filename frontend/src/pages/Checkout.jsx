@@ -11,13 +11,16 @@ import { API_BASE_URL } from "../config.js";
 
 // step: "idle" | "detecting" | "review" | "billing" | "done" | "error"
 
-// Person B's base model is trained on six items, but per
-// RESPONSES_TO_PERSON_B_AND_C.md, Pepsi has AP = 0.000 — a dataset gap
-// (only a generic soda-can was in the source data), so real Pepsi cans
-// won't reliably detect yet even though the class exists. Listed
-// separately so staff don't trust it the same as the other five.
+// Person B's model is trained on six items. Pepsi WAS unusable (AP50
+// 0.000 — a dataset gap, only a generic soda-can in the source data),
+// but per TRAINING_RESULTS.md the retrain fixed it for real: AP50 0.885,
+// precision 0.944, recall 0.780. Genuinely a working class now, not the
+// old workaround. Per Person B's explicit recommendation, softening
+// this warning rather than removing it — recall 0.78 means it'll still
+// miss roughly 1 in 5 real cans (smallest val set of the six classes),
+// so still worth a heads-up, just not "don't trust it" anymore.
 const RELIABLE_ITEMS = ["Apple", "Banana", "Dragon Fruit", "Custard Apple", "Diet Coke"];
-const UNRELIABLE_ITEM_NOTE = "Pepsi is in the model but has a known dataset gap — don't rely on it detecting yet.";
+const UNRELIABLE_ITEM_NOTE = "Pepsi detection has improved a lot, but still misses roughly 1 in 5 cans — slightly less reliable than the other five.";
 
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
