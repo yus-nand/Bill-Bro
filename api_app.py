@@ -93,6 +93,25 @@ class DetectRequest(BaseModel):
     confidence_threshold: float = 0.5  # Detection confidence threshold
 
 
+class CreateItemRequest(BaseModel):
+    """
+    Request body for POST /items — matches the documented contract in
+    FOR_PERSON_C.md / RESPONSES_TO_PERSON_B_AND_C.md exactly.
+
+    Note: no `batch_number` or `barcode` field — neither exists in the
+    `items` table (see database.py). If the frontend sends them anyway,
+    Pydantic's default behavior silently ignores unknown fields (no error),
+    so this is safe either way, but the frontend should stop sending
+    batch_number since it's never persisted.
+    """
+    name: str
+    sku: str
+    price: float
+    category: Optional[str] = None
+    expiry_date: Optional[date] = None
+    low_stock_threshold: int = 5
+
+
 # ============================================================================
 # ITEMS ENDPOINTS (Manage Products)
 # ============================================================================
@@ -115,29 +134,32 @@ def get_item(item_id: int, db: Session = Depends(get_db)):
 
 @app.post("/items", tags=["Items"])
 def create_item(
-    name: str,
-    sku: str,
-    price: float,
-    category: Optional[str] = None,
-    expiry_date: Optional[date] = None,
-    low_stock_threshold: int = 5,
+    body: CreateItemRequest,
     store_id: str = "store_001",
     db: Session = Depends(get_db)
 ):
-    """Create new item"""
+    """
+    Create new item.
+
+    Takes a JSON body (CreateItemRequest) — previously this used plain
+    scalar function args, which FastAPI reads as query params, not a JSON
+    body. That mismatched every doc's example and frontend/src/api.js,
+    which both POST a JSON body. Fixed here; store_id stays a query param
+    since it's not part of the documented request body.
+    """
     # Check if SKU already exists
-    existing = db.query(Item).filter(Item.sku == sku).first()
+    existing = db.query(Item).filter(Item.sku == body.sku).first()
     if existing:
         raise HTTPException(status_code=400, detail="SKU already exists")
 
     item = Item(
         store_id=store_id,
-        name=name,
-        sku=sku,
-        price=price,
-        category=category,
-        expiry_date=expiry_date,
-        low_stock_threshold=low_stock_threshold
+        name=body.name,
+        sku=body.sku,
+        price=body.price,
+        category=body.category,
+        expiry_date=body.expiry_date,
+        low_stock_threshold=body.low_stock_threshold
     )
     db.add(item)
     db.commit()
