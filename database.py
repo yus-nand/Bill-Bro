@@ -37,6 +37,12 @@ class Item(Base):
     category = Column(String(100))
     expiry_date = Column(Date)
     low_stock_threshold = Column(Integer, default=5)
+    # Tracks the CURRENT/most recent batch only — this table is 1 row per
+    # Item, so restocking a new batch overwrites these two fields rather
+    # than preserving history. If per-batch history or multiple concurrent
+    # batches are ever needed, this needs a separate Batch table instead.
+    batch_number = Column(String(100))
+    batch_arrival_date = Column(Date)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -55,6 +61,8 @@ class Item(Base):
             'category': self.category,
             'expiry_date': self.expiry_date.isoformat() if self.expiry_date else None,
             'low_stock_threshold': self.low_stock_threshold,
+            'batch_number': self.batch_number,
+            'batch_arrival_date': self.batch_arrival_date.isoformat() if self.batch_arrival_date else None,
             'created_at': self.created_at.isoformat(),
             'updated_at': self.updated_at.isoformat()
         }

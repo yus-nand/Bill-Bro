@@ -96,13 +96,15 @@ class DetectRequest(BaseModel):
 class CreateItemRequest(BaseModel):
     """
     Request body for POST /items — matches the documented contract in
-    FOR_PERSON_C.md / RESPONSES_TO_PERSON_B_AND_C.md exactly.
+    FOR_PERSON_C.md / RESPONSES_TO_PERSON_B_AND_C.md, plus batch_number
+    and batch_arrival_date (added on request).
 
-    Note: no `batch_number` or `barcode` field — neither exists in the
-    `items` table (see database.py). If the frontend sends them anyway,
-    Pydantic's default behavior silently ignores unknown fields (no error),
-    so this is safe either way, but the frontend should stop sending
-    batch_number since it's never persisted.
+    Note: still no `barcode` field — that one genuinely doesn't exist in
+    the `items` table. batch_number/batch_arrival_date DO now exist
+    (see database.py) and are stored — this is the ONE current/most
+    recent batch per item, not per-batch history (items:inventory is a
+    1:1 relationship, so there's no concept of multiple concurrent
+    batches of the same item yet).
     """
     name: str
     sku: str
@@ -110,6 +112,8 @@ class CreateItemRequest(BaseModel):
     category: Optional[str] = None
     expiry_date: Optional[date] = None
     low_stock_threshold: int = 5
+    batch_number: Optional[str] = None
+    batch_arrival_date: Optional[date] = None
 
 
 # ============================================================================
@@ -159,7 +163,9 @@ def create_item(
         price=body.price,
         category=body.category,
         expiry_date=body.expiry_date,
-        low_stock_threshold=body.low_stock_threshold
+        low_stock_threshold=body.low_stock_threshold,
+        batch_number=body.batch_number,
+        batch_arrival_date=body.batch_arrival_date
     )
     db.add(item)
     db.commit()
@@ -171,6 +177,70 @@ def create_item(
     db.commit()
 
     return {"status": "success", "item_id": item.id, "item": item.to_dict()}
+
+
+class RestockRequest(BaseModel):
+    """
+    Request body for PATCH /items/{item_id}/restock.
+
+    Covers the "new batch of an existing item arrived" case that
+    POST /items alone can't handle (sku is unique, so an existing item
+    can't be re-created). batch_number/batch_arrival_date, if given,
+    overwrite the item's current batch fields — per the "one active
+    batch per item" model, there's no history kept of the previous batch.
+    """
+    quantity_added: int
+    batch_number: Optional[str] = None
+    batch_arrival_date: Optional[date] = None
+
+
+@app.patch("/items/{item_id}/restock", tags=["Items"])
+def restock_item(
+    item_id: int,
+    body: RestockRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Record a new batch arriving for an existing item: adds to current
+    stock and overwrites the item's batch_number/batch_arrival_date.
+
+    Does NOT auto-resolve existing LOW_STOCK/STOCK_OUT alerts — those
+    stay manually resolved via PATCH /alerts/{id}, consistent with how
+    alerts are handled everywhere else in this API.
+    """
+    if body.quantity_added <= 0:
+        raise HTTPException(status_code=400, detail="quantity_added must be positive")
+
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    inventory = item.inventory
+    if not inventory:
+        raise HTTPException(status_code=404, detail="Inventory record not found for this item")
+
+    old_count = inventory.current_count
+    inventory.current_count += body.quantity_added
+    inventory.last_updated = datetime.utcnow()
+
+    if body.batch_number is not None:
+        item.batch_number = body.batch_number
+    if body.batch_arrival_date is not None:
+        item.batch_arrival_date = body.batch_arrival_date
+
+    db.commit()
+    db.refresh(item)
+    db.refresh(inventory)
+
+    return {
+        "status": "success",
+        "item_id": item.id,
+        "item_name": item.name,
+        "old_count": old_count,
+        "new_count": inventory.current_count,
+        "batch_number": item.batch_number,
+        "batch_arrival_date": item.batch_arrival_date.isoformat() if item.batch_arrival_date else None
+    }
 
 
 # ============================================================================
