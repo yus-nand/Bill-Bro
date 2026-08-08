@@ -37,6 +37,18 @@ class Item(Base):
     category = Column(String(100))
     expiry_date = Column(Date)
     low_stock_threshold = Column(Integer, default=5)
+    # Shelve gate for the Add Item -> Train -> Shelve loop. New items
+    # default to 'pending'; /training/upload_images moves them through
+    # pending -> training -> shelved/failed as retrain_model() runs.
+    # NOT YET ENFORCED: neither /detect nor /checkout/bill currently
+    # filter on this column, so it's additive only for now. The 6
+    # existing base-model items (apple, banana, etc.) are already
+    # detectable via grocery_yolov8.pt without ever going through
+    # training — they'll sit at 'pending' by default too, since nothing
+    # sets them to 'shelved'. Needs a one-time backfill (or a different
+    # default for pre-seeded items) once status-based filtering actually
+    # gets built, or Checkout will silently stop finding them.
+    status = Column(String(20), default='pending')  # pending | training | shelved | failed
     # Tracks the CURRENT/most recent batch only — this table is 1 row per
     # Item, so restocking a new batch overwrites these two fields rather
     # than preserving history. If per-batch history or multiple concurrent
@@ -238,9 +250,18 @@ class TrainingJob(Base):
     store_id = Column(String(50), default='store_001', nullable=False)
     status = Column(String(20), default='pending')  # 'pending', 'running', 'success', 'failed'
     progress = Column(Integer, default=0)  # 0-100
-    current_epoch = Column(Integer, default=0)
+    # training.py writes progress-through-a-run strings like "3/5", not a
+    # bare int (see retrain_model()'s _update_job calls) — was Integer,
+    # would reject every real write. total_epochs kept as-is; it's
+    # redundant with the "N/M" format but harmless if left unpopulated.
+    current_epoch = Column(String(20))
     total_epochs = Column(Integer, default=5)
     accuracy = Column(Float)
+    # Full metrics dict from retrain_model(): mAP50, mAP50-95, precision,
+    # recall, per_class_AP50 (per-item breakdown), epochs,
+    # new_item_train_images. `accuracy` alone (a single float) can't hold
+    # this — stored as JSON text, same pattern as ModelVersion.metrics.
+    metrics = Column(Text)
     error_message = Column(String(500))
     model_version = Column(String(50))
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -256,6 +277,7 @@ class TrainingJob(Base):
             'current_epoch': self.current_epoch,
             'total_epochs': self.total_epochs,
             'accuracy': self.accuracy,
+            'metrics': json.loads(self.metrics) if self.metrics else None,
             'error_message': self.error_message,
             'model_version': self.model_version,
             'created_at': self.created_at.isoformat(),
