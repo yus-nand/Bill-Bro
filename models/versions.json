@@ -1,0 +1,26 @@
+{
+  "store_001": [
+    {
+      "store_id": "store_001",
+      "version": "v1",
+      "model_path": "models/grocery_yolov8.pt",
+      "metrics": {
+        "mAP50": 0.956,
+        "mAP50-95": 0.789,
+        "precision": 0.965,
+        "recall": 0.93,
+        "per_class_AP50": {
+          "apple": 0.995,
+          "banana": 0.994,
+          "dragonfruit": 0.981,
+          "custard_apple": 0.995,
+          "diet_coke": 0.889,
+          "pepsi": 0.885
+        }
+      },
+      "is_active": true,
+      "trained_at": "2026-08-08T15:37:09",
+      "deployed_at": "2026-08-08T16:00:00"
+    }
+  ]
+}

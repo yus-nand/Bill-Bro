@@ -3,7 +3,7 @@ BillBro FastAPI Application
 Main API server for inventory management
 """
 
-from fastapi import FastAPI, HTTPException, Depends, UploadFile, File
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
@@ -11,6 +11,8 @@ from datetime import datetime, date
 from typing import List, Optional, Any
 from functools import lru_cache
 from pydantic import BaseModel
+import csv
+import io
 import json
 import os
 import re
@@ -18,7 +20,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from database import Base, Item, Inventory, Alert, ModelVersion, Transaction, TrainingJob
+from database import Base, Item, Inventory, Alert, ModelVersion, Transaction, TrainingJob, StoreSettings
 
 try:
     from predict import GroceryDetector
@@ -185,6 +187,15 @@ def create_item(
     if existing:
         raise HTTPException(status_code=400, detail="SKU already exists")
 
+    # Item.name is also DB-level unique (database.py), but only SKU was
+    # pre-checked here — found during audit. Without this, a duplicate
+    # name would hit db.commit() below and raise an unhandled
+    # IntegrityError (500 with a stack trace) instead of a clean 400,
+    # same as the SKU case above.
+    existing_name = db.query(Item).filter(Item.name == body.name).first()
+    if existing_name:
+        raise HTTPException(status_code=400, detail="An item with this name already exists")
+
     item = Item(
         store_id=store_id,
         name=body.name,
@@ -304,14 +315,32 @@ def get_inventory(store_id: str = "store_001", db: Session = Depends(get_db)):
     return status
 
 
+class AdjustInventoryRequest(BaseModel):
+    """
+    Request body for PATCH /inventory/{item_id}.
+
+    Found during audit: `quantity`/`reason` were previously bare scalar
+    function args with defaults, which FastAPI reads as query params, not
+    a JSON body — same bug class as the old create_item() issue. Not
+    currently wired to any frontend UI (manual stock adjustment isn't
+    built yet), so this hasn't bitten anyone in practice, but it's the
+    same latent mistake and worth fixing before something calls it for
+    real. `frontend/src/api.js`'s `adjustInventory()` already sends a
+    JSON body matching this model.
+    """
+    quantity: int = 1
+    reason: str = "billed"
+
+
 @app.patch("/inventory/{item_id}", tags=["Inventory"])
 def decrement_inventory(
     item_id: int,
-    quantity: int = 1,
-    reason: str = "billed",
+    body: AdjustInventoryRequest = AdjustInventoryRequest(),
     db: Session = Depends(get_db)
 ):
     """Decrement stock (called during checkout)"""
+    quantity = body.quantity
+    reason = body.reason
     inventory = db.query(Inventory).filter(Inventory.item_id == item_id).first()
     if not inventory:
         raise HTTPException(status_code=404, detail="Inventory record not found")
@@ -405,9 +434,27 @@ def resolve_alert(alert_id: int, db: Session = Depends(get_db)):
 # CHECKOUT ENDPOINTS
 # ============================================================================
 
+class CheckoutRequest(BaseModel):
+    """
+    Request body for POST /checkout/bill.
+
+    Found during audit: `detections` was previously a bare `List[dict]`
+    function parameter with no wrapping model. As the sole body
+    parameter, FastAPI treats that as "the entire request body IS this
+    array" — i.e. it would only accept a raw `[{...}, {...}]` payload,
+    not `{"detections": [...]}`. But every doc (API_CONTRACT.md) and the
+    frontend (`processCheckout()` in api.js) send the wrapped shape. This
+    is the exact same class of bug as the old create_item() query-param
+    issue — a body parameter that doesn't actually match what callers
+    send. Wrapping in a model here (rather than changing the frontend)
+    matches the already-documented, already-built contract.
+    """
+    detections: List[dict]
+
+
 @app.post("/checkout/bill", tags=["Checkout"])
 def process_checkout(
-    detections: List[dict],
+    body: CheckoutRequest,
     store_id: str = "store_001",
     db: Session = Depends(get_db)
 ):
@@ -415,6 +462,7 @@ def process_checkout(
     Process checkout and decrement inventory
     Detections format: [{"item_name": "apple", "confidence": 0.95, "quantity": 2}, ...]
     """
+    detections = body.detections
     cart = []
     total = 0.0
     alerts = []
@@ -566,21 +614,69 @@ def detect(body: DetectRequest):
 
 
 # ============================================================================
-# MODELS ENDPOINT
+# MODELS ENDPOINTS
 # ============================================================================
+#
+# Fix applied per Person B's FOR_PERSON_A_MODELS_ENDPOINTS.md: the old
+# get_active_model() queried the SQL ModelVersion table, but nothing ever
+# writes to it — StoreModelManager.register_version() (called at the end
+# of every successful retrain_model()) writes to models/versions.json
+# instead, by design, to keep the DB out of the ML code. That meant this
+# route 404'd no matter how many models had actually been trained. Reading
+# from StoreModelManager directly instead — same fix Person B proposed,
+# applied here rather than left as a doc.
+
+try:
+    from predict import StoreModelManager
+    MODEL_MANAGER_AVAILABLE = True
+except ImportError:
+    MODEL_MANAGER_AVAILABLE = False
+
 
 @app.get("/models/active", tags=["Models"])
-def get_active_model(store_id: str = "store_001", db: Session = Depends(get_db)):
-    """Get active model for store"""
-    model = db.query(ModelVersion).filter(
-        ModelVersion.store_id == store_id,
-        ModelVersion.is_active == True
-    ).order_by(ModelVersion.deployed_at.desc()).first()
+def get_active_model(store_id: str = "store_001"):
+    """Get the active model version for a store, from StoreModelManager's
+    models/versions.json index — NOT the SQL ModelVersion table (see note
+    above)."""
+    if not MODEL_MANAGER_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Model manager not available.")
 
-    if not model:
+    manager = StoreModelManager(models_dir="models")
+    history = manager.list_versions(store_id)
+    active = next((v for v in reversed(history) if v.get("is_active")), None)
+
+    if not active:
         raise HTTPException(status_code=404, detail="No active model found")
 
-    return model.to_dict()
+    return active
+
+
+@app.get("/models", tags=["Models"])
+def list_models(store_id: str = "store_001"):
+    """Version history for a store, newest last. Versions are strings
+    ("v1", "v2", ...), not numeric ids — matches API_CONTRACT.md."""
+    if not MODEL_MANAGER_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Model manager not available.")
+
+    manager = StoreModelManager(models_dir="models")
+    return manager.list_versions(store_id)
+
+
+@app.post("/models/{version}/activate", tags=["Models"])
+@app.post("/models/{version}/rollback", tags=["Models"])
+def activate_model(version: str, store_id: str = "store_001"):
+    """Point {store_id}_latest.pt at the given version. Same operation
+    either way — StoreModelManager doesn't distinguish "activate an older
+    version" from "roll back to it"."""
+    if not MODEL_MANAGER_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Model manager not available.")
+
+    manager = StoreModelManager(models_dir="models")
+    try:
+        manager.rollback(store_id, version)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"status": "success", "store_id": store_id, "active_version": version}
 
 
 # ============================================================================
@@ -596,9 +692,18 @@ BASE_DATA_YAML = "data.yaml"
 
 @app.post("/training/upload_images", tags=["Training"])
 def upload_training_images(
-    item_id: int,
-    item_name: str,
-    store_id: str = "store_001",
+    # Found during audit: these three were bare scalar params with no
+    # Form() annotation. In a route with File(...), FastAPI does NOT
+    # auto-treat sibling scalars as form fields — without Form(), they're
+    # read as query parameters. The frontend sends them as multipart form
+    # fields (FormData.append), which FastAPI would never see this way.
+    # item_id (required, no default) and item_name (required, no default,
+    # and frontend never even sent it — see api.js) would both 422 with
+    # "field required" on the very first real upload. Fixed by declaring
+    # them explicitly as Form fields, matching what's actually sent.
+    item_id: int = Form(...),
+    item_name: str = Form(...),
+    store_id: str = Form("store_001"),
     images: List[UploadFile] = File(...),
     db: Session = Depends(get_db),
 ):
@@ -721,6 +826,203 @@ def get_training_job(job_id: str):
     if result.get("status") == "unknown":
         raise HTTPException(status_code=404, detail="Job not found")
     return result
+
+
+# ============================================================================
+# ADMIN ENDPOINTS (Week 7 — bulk CSV import, store settings)
+#
+# Built against what frontend/src/api.js's "PROPOSED" section already
+# expected before either side had a real endpoint: uploadBulkCsv(file) ->
+# POST /admin/bulk_upload (multipart, field "file"), updateStoreSettings()
+# -> PUT /admin/settings (JSON body). Adding GET /admin/settings too so the
+# Admin page has something to read on load, not just write to.
+# ============================================================================
+
+class StoreSettingsRequest(BaseModel):
+    """
+    Request body for PUT /admin/settings. All fields optional — this is a
+    partial update (same pattern as RestockRequest's optional batch
+    fields): only send the settings you want to change, existing values
+    are left alone.
+    """
+    tax_rate_pct: Optional[float] = None
+    currency_symbol: Optional[str] = None
+    low_stock_default_threshold: Optional[int] = None
+
+
+def _get_or_create_settings(db: Session, store_id: str) -> StoreSettings:
+    """Every store implicitly has settings (defaults from the column
+    definitions in database.py) even before any PUT has ever been sent —
+    upsert-on-read so GET /admin/settings never 404s for a store that
+    simply hasn't customized anything yet."""
+    settings = db.query(StoreSettings).filter(StoreSettings.store_id == store_id).first()
+    if not settings:
+        settings = StoreSettings(store_id=store_id)
+        db.add(settings)
+        db.commit()
+        db.refresh(settings)
+    return settings
+
+
+@app.get("/admin/settings", tags=["Admin"])
+def get_store_settings(store_id: str = "store_001", db: Session = Depends(get_db)):
+    """Get this store's settings (tax rate, currency symbol, default
+    low-stock threshold), creating a default row if none exists yet."""
+    settings = _get_or_create_settings(db, store_id)
+    return settings.to_dict()
+
+
+@app.put("/admin/settings", tags=["Admin"])
+def update_store_settings(
+    body: StoreSettingsRequest,
+    store_id: str = "store_001",
+    db: Session = Depends(get_db)
+):
+    """Partial update of this store's settings — only fields present in
+    the body are changed. Matches updateStoreSettings(settings) in
+    api.js, which PUTs whatever subset of fields the Admin form has."""
+    settings = _get_or_create_settings(db, store_id)
+
+    if body.tax_rate_pct is not None:
+        settings.tax_rate_pct = body.tax_rate_pct
+    if body.currency_symbol is not None:
+        settings.currency_symbol = body.currency_symbol
+    if body.low_stock_default_threshold is not None:
+        settings.low_stock_default_threshold = body.low_stock_default_threshold
+
+    db.commit()
+    db.refresh(settings)
+    return {"status": "success", "settings": settings.to_dict()}
+
+
+@app.post("/admin/bulk_upload", tags=["Admin"])
+def bulk_upload_items(
+    store_id: str = Form("store_001"),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Bulk create/update items from a CSV file.
+
+    Expected columns (header row required): name, sku, price, and
+    optionally category, expiry_date (YYYY-MM-DD), low_stock_threshold.
+    Upserts by sku — matches how POST /items already treats sku as the
+    unique key (name is unique too, but sku is the one this endpoint's
+    "does this row already exist" check is built around, since it's the
+    more natural bulk-catalog key). New items are created with status
+    "pending" and a zeroed inventory row, exactly like POST /items does;
+    existing items (matched by sku) have name/price/category/
+    expiry_date/low_stock_threshold overwritten but status and current
+    stock count are left untouched — a bulk catalog re-upload shouldn't
+    silently wipe someone's live stock count or kick a shelved item back
+    to undetectable.
+
+    Per-row errors (bad price, missing required field, etc.) are
+    collected rather than failing the whole upload — one bad row in a
+    500-row CSV shouldn't block the other 499.
+
+    File.filename here is attacker/user-controlled input from the
+    multipart request, used only for the .csv extension check below —
+    never used as a filesystem path, so no path-traversal exposure.
+    """
+    if not file.filename or not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="File must be a .csv")
+
+    raw = file.file.read()
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="File must be UTF-8 encoded text")
+
+    reader = csv.DictReader(io.StringIO(text))
+    if not reader.fieldnames or "name" not in reader.fieldnames or "sku" not in reader.fieldnames or "price" not in reader.fieldnames:
+        raise HTTPException(
+            status_code=400,
+            detail="CSV must have a header row with at least: name, sku, price"
+        )
+
+    created = 0
+    updated = 0
+    errors = []
+
+    for i, row in enumerate(reader, start=2):  # start=2: row 1 is the header
+        name = (row.get("name") or "").strip()
+        sku = (row.get("sku") or "").strip()
+        price_raw = (row.get("price") or "").strip()
+
+        if not name or not sku or not price_raw:
+            errors.append({"row": i, "error": "name, sku, and price are required"})
+            continue
+
+        try:
+            price = float(price_raw)
+        except ValueError:
+            errors.append({"row": i, "error": f"price '{price_raw}' is not a number"})
+            continue
+
+        threshold_raw = (row.get("low_stock_threshold") or "").strip()
+        low_stock_threshold = 5
+        if threshold_raw:
+            try:
+                low_stock_threshold = int(threshold_raw)
+            except ValueError:
+                errors.append({"row": i, "error": f"low_stock_threshold '{threshold_raw}' is not an integer"})
+                continue
+
+        expiry_raw = (row.get("expiry_date") or "").strip()
+        expiry_value = None
+        if expiry_raw:
+            try:
+                expiry_value = datetime.strptime(expiry_raw, "%Y-%m-%d").date()
+            except ValueError:
+                errors.append({"row": i, "error": f"expiry_date '{expiry_raw}' must be YYYY-MM-DD"})
+                continue
+
+        category = (row.get("category") or "").strip() or None
+
+        existing = db.query(Item).filter(Item.sku == sku).first()
+        if existing:
+            # Also guard the name-uniqueness constraint on update, same
+            # reasoning as create_item()'s pre-check — renaming row A to
+            # collide with existing row B would otherwise 500 on commit.
+            name_clash = db.query(Item).filter(Item.name == name, Item.id != existing.id).first()
+            if name_clash:
+                errors.append({"row": i, "error": f"name '{name}' already used by a different item"})
+                continue
+            existing.name = name
+            existing.price = price
+            existing.category = category
+            existing.expiry_date = expiry_value
+            existing.low_stock_threshold = low_stock_threshold
+            updated += 1
+        else:
+            name_clash = db.query(Item).filter(Item.name == name).first()
+            if name_clash:
+                errors.append({"row": i, "error": f"name '{name}' already exists"})
+                continue
+            item = Item(
+                store_id=store_id,
+                name=name,
+                sku=sku,
+                price=price,
+                category=category,
+                expiry_date=expiry_value,
+                low_stock_threshold=low_stock_threshold,
+            )
+            db.add(item)
+            db.flush()  # assigns item.id without committing, so the inventory row below can reference it
+            db.add(Inventory(item_id=item.id, current_count=0))
+            created += 1
+
+    db.commit()
+
+    return {
+        "status": "success",
+        "created": created,
+        "updated": updated,
+        "error_count": len(errors),
+        "errors": errors,
+    }
 
 
 # ============================================================================

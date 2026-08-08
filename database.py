@@ -73,6 +73,12 @@ class Item(Base):
             'category': self.category,
             'expiry_date': self.expiry_date.isoformat() if self.expiry_date else None,
             'low_stock_threshold': self.low_stock_threshold,
+            # Added during audit — status (pending|training|shelved|failed)
+            # is a real, important column but was never surfaced here, so
+            # GET /items, GET /items/{id}, and POST /items's response all
+            # silently omitted it despite it being the whole basis of the
+            # Add Item -> Train -> Shelve gate.
+            'status': self.status,
             'batch_number': self.batch_number,
             'batch_arrival_date': self.batch_arrival_date.isoformat() if self.batch_arrival_date else None,
             'created_at': self.created_at.isoformat(),
@@ -282,6 +288,32 @@ class TrainingJob(Base):
             'model_version': self.model_version,
             'created_at': self.created_at.isoformat(),
             'completed_at': self.completed_at.isoformat() if self.completed_at else None
+        }
+
+
+class StoreSettings(Base):
+    """Per-store configuration — tax rate, currency, default thresholds.
+
+    New table, added for the Admin page (Week 7). One row per store_id;
+    api_app.py's PATCH /admin/settings upserts it. Frontend's
+    `updateStoreSettings()` in api.js already expects a settings-shaped
+    PUT/PATCH, this just gives it somewhere real to land.
+    """
+    __tablename__ = 'store_settings'
+
+    store_id = Column(String(50), primary_key=True)
+    tax_rate_pct = Column(Float, default=18.0)
+    currency_symbol = Column(String(10), default='₹')
+    low_stock_default_threshold = Column(Integer, default=5)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            'store_id': self.store_id,
+            'tax_rate_pct': self.tax_rate_pct,
+            'currency_symbol': self.currency_symbol,
+            'low_stock_default_threshold': self.low_stock_default_threshold,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
         }
 
 
