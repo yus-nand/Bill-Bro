@@ -3,13 +3,18 @@
 -- Store: store_001 (Test Store)
 
 -- Insert sample items (base model: apple, banana, dragonfruit, custard_apple, diet_coke, pepsi)
-INSERT INTO items (store_id, name, sku, price, category, expiry_date, low_stock_threshold) VALUES
-('store_001', 'Apple', 'APL001', 35.00, 'fruits', '2026-09-15', 5),
-('store_001', 'Banana', 'BAN001', 25.00, 'fruits', '2026-08-12', 10),
-('store_001', 'Dragon Fruit', 'DRF001', 120.00, 'fruits', '2026-08-20', 3),
-('store_001', 'Custard Apple', 'CUS001', 80.00, 'fruits', '2026-08-25', 4),
-('store_001', 'Diet Coke', 'DCK001', 50.00, 'beverages', '2026-12-31', 10),
-('store_001', 'Pepsi', 'PEP001', 50.00, 'beverages', '2026-12-15', 10);
+-- status='shelved' explicitly: these are pre-trained into the base
+-- model, not added via the Add Item -> Train -> Shelve pipeline, so they
+-- should be immediately checkout-detectable rather than sitting at the
+-- schema's 'pending' default (which would make POST /checkout/bill
+-- silently reject all six of them).
+INSERT INTO items (store_id, name, sku, price, category, expiry_date, low_stock_threshold, status) VALUES
+('store_001', 'Apple', 'APL001', 35.00, 'fruits', '2026-09-15', 5, 'shelved'),
+('store_001', 'Banana', 'BAN001', 25.00, 'fruits', '2026-08-12', 10, 'shelved'),
+('store_001', 'Dragon Fruit', 'DRF001', 120.00, 'fruits', '2026-08-20', 3, 'shelved'),
+('store_001', 'Custard Apple', 'CUS001', 80.00, 'fruits', '2026-08-25', 4, 'shelved'),
+('store_001', 'Diet Coke', 'DCK001', 50.00, 'beverages', '2026-12-31', 10, 'shelved'),
+('store_001', 'Pepsi', 'PEP001', 50.00, 'beverages', '2026-12-15', 10, 'shelved');
 
 -- Insert inventory levels
 INSERT INTO inventory (item_id, current_count) VALUES

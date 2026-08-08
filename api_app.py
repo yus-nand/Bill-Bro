@@ -412,6 +412,16 @@ def process_checkout(
         if not item:
             continue
 
+        # Per API_CONTRACT.md: an item is only checkout-detectable once
+        # status='shelved'. /detect itself can't enforce this (it's a
+        # stateless model wrapper with no DB access — it doesn't know
+        # about Item rows at all), so this is the actual enforcement
+        # point. Mirrors the "item not found" case above: silently
+        # skipped, not an error, since /detect may legitimately return a
+        # raw detection for something mid-training or not yet shelved.
+        if item.status != "shelved":
+            continue
+
         # Add to cart
         item_total = item.price * quantity
         cart.append({

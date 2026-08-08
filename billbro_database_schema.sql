@@ -14,6 +14,17 @@ CREATE TABLE IF NOT EXISTS items (
     category TEXT,
     expiry_date DATE,
     low_stock_threshold INTEGER DEFAULT 5,
+    -- Shelve gate for Add Item -> Train -> Shelve. An item is only
+    -- checkout-detectable once status='shelved' (enforced in
+    -- POST /checkout/bill). Items created via a fresh setup of this
+    -- schema (e.g. sample data) should be set to 'shelved' explicitly if
+    -- they're meant to be immediately sellable, since they bypass the
+    -- training pipeline entirely.
+    status TEXT DEFAULT 'pending', -- pending | training | shelved | failed
+    -- Tracks the CURRENT/most recent batch only (Item:Inventory is 1:1,
+    -- no per-batch history). See PATCH /items/{id}/restock.
+    batch_number TEXT,
+    batch_arrival_date DATE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -89,9 +100,14 @@ CREATE TABLE IF NOT EXISTS training_jobs (
     store_id TEXT NOT NULL DEFAULT 'store_001',
     status TEXT DEFAULT 'pending', -- 'pending', 'running', 'success', 'failed'
     progress INTEGER DEFAULT 0, -- 0-100
-    current_epoch INTEGER DEFAULT 0,
+    -- SQLite has no strict typing (type affinity only) - a "3/5"-style
+    -- progress string works fine here despite the INTEGER declaration
+    -- below, but matches database.py's ORM model (String) if a fresh
+    -- setup is ever moved to a stricter engine (e.g. Postgres).
+    current_epoch TEXT DEFAULT '0',
     total_epochs INTEGER DEFAULT 5,
     accuracy REAL,
+    metrics TEXT, -- JSON: mAP50, mAP50-95, precision, recall, per_class_AP50, epochs, new_item_train_images
     error_message TEXT,
     model_version TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
