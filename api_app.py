@@ -75,11 +75,17 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",       # React dev server (if Person C uses React)
-        "http://localhost:5173",       # Vite dev server (Person C is using this)
+        "http://localhost:5173",       # Vite dev server default port
+        "http://localhost:5174",       # Vite falls back here if 5173 is taken (e.g. by another project)
+        "http://localhost:5175",       # ...and here if both are taken
         "http://localhost:8000",       # API docs
+        "http://localhost:8001",       # Alt backend port, when 8000 is taken locally
         "http://127.0.0.1:3000",
         "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+        "http://127.0.0.1:5175",
         "http://127.0.0.1:8000",
+        "http://127.0.0.1:8001",
         # Add your production domain here later:
         # "https://billbro.yourcompany.com",
     ],
@@ -225,13 +231,22 @@ class RestockRequest(BaseModel):
 
     Covers the "new batch of an existing item arrived" case that
     POST /items alone can't handle (sku is unique, so an existing item
-    can't be re-created). batch_number/batch_arrival_date, if given,
-    overwrite the item's current batch fields — per the "one active
+    can't be re-created). batch_number/batch_arrival_date/expiry_date,
+    if given, overwrite the item's current fields — per the "one active
     batch per item" model, there's no history kept of the previous batch.
+
+    expiry_date added alongside the existing batch fields: a new batch
+    arriving very often means a new best-by/use-by date too (printed
+    dates on packaged goods, a fresh use-by window on produce), and
+    leaving the old item.expiry_date in place after a restock would mean
+    the catalog quietly drifts out of date the moment the old batch sells
+    through. Optional, same overwrite-only-if-given pattern as the other
+    two — a restock that doesn't mention expiry leaves it untouched.
     """
     quantity_added: int
     batch_number: Optional[str] = None
     batch_arrival_date: Optional[date] = None
+    expiry_date: Optional[date] = None
 
 
 @app.patch("/items/{item_id}/restock", tags=["Items"])
@@ -242,7 +257,8 @@ def restock_item(
 ):
     """
     Record a new batch arriving for an existing item: adds to current
-    stock and overwrites the item's batch_number/batch_arrival_date.
+    stock and overwrites the item's batch_number/batch_arrival_date/
+    expiry_date (whichever are provided).
 
     Does NOT auto-resolve existing LOW_STOCK/STOCK_OUT alerts — those
     stay manually resolved via PATCH /alerts/{id}, consistent with how
@@ -267,6 +283,8 @@ def restock_item(
         item.batch_number = body.batch_number
     if body.batch_arrival_date is not None:
         item.batch_arrival_date = body.batch_arrival_date
+    if body.expiry_date is not None:
+        item.expiry_date = body.expiry_date
 
     db.commit()
     db.refresh(item)
@@ -279,7 +297,8 @@ def restock_item(
         "old_count": old_count,
         "new_count": inventory.current_count,
         "batch_number": item.batch_number,
-        "batch_arrival_date": item.batch_arrival_date.isoformat() if item.batch_arrival_date else None
+        "batch_arrival_date": item.batch_arrival_date.isoformat() if item.batch_arrival_date else None,
+        "expiry_date": item.expiry_date.isoformat() if item.expiry_date else None
     }
 
 
@@ -309,7 +328,14 @@ def get_inventory(store_id: str = "store_001", db: Session = Depends(get_db)):
             'price': item.price,
             'current_count': inv_count,
             'low_stock_threshold': item.low_stock_threshold,
-            'status': alert_status
+            'status': alert_status,
+            # Added so the Inventory page can actually show batch/expiry
+            # info in the table, not just accept it via the Restock form
+            # — these were being written by PATCH /items/{id}/restock but
+            # never read back anywhere on this endpoint.
+            'batch_number': item.batch_number,
+            'batch_arrival_date': item.batch_arrival_date.isoformat() if item.batch_arrival_date else None,
+            'expiry_date': item.expiry_date.isoformat() if item.expiry_date else None,
         })
 
     return status

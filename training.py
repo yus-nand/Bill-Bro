@@ -198,6 +198,17 @@ class ReplayPool:
         Args:
             base_data_yaml: The base model's data.yaml.
             samples_per_class: How many images per base class to seed with.
+
+        Raises:
+            FileNotFoundError: If base_data_yaml's train/labels directory
+                doesn't exist, or exists but contributes zero images to
+                every class. This used to fail silently — it would still
+                write the registry with an empty pool, which permanently
+                (registry-exists = no-op on every future call) disables
+                catastrophic-forgetting protection for this store without
+                any error surfacing anywhere. Loud failure here is much
+                cheaper than a silently-broken replay pool discovered
+                weeks later.
         """
         if self.registry_path.exists():
             return
@@ -210,15 +221,33 @@ class ReplayPool:
         base_train_images = base_root / base_cfg["train"]
         base_train_labels = base_train_images.parent / "labels"
 
+        if not base_train_labels.exists():
+            raise FileNotFoundError(
+                f"ReplayPool.bootstrap_from_base: labels directory "
+                f"{base_train_labels} does not exist (resolved from "
+                f"base_data_yaml={base_data_yaml!r}, path={base_cfg.get('path')!r}, "
+                f"train={base_cfg.get('train')!r}). The base model's actual "
+                f"training images/labels need to be present at this path on "
+                f"whichever machine runs retrain_model() — a data.yaml file "
+                f"alone isn't enough, it has to resolve to real files."
+            )
+
         by_class: dict[int, list[Path]] = {i: [] for i in range(len(base_names))}
-        if base_train_labels.exists():
-            for label_file in base_train_labels.glob("*.txt"):
-                lines = label_file.read_text().splitlines()
-                if not lines:
-                    continue
-                cls_id = int(lines[0].split()[0])
-                if cls_id in by_class:
-                    by_class[cls_id].append(label_file)
+        for label_file in base_train_labels.glob("*.txt"):
+            lines = label_file.read_text().splitlines()
+            if not lines:
+                continue
+            cls_id = int(lines[0].split()[0])
+            if cls_id in by_class:
+                by_class[cls_id].append(label_file)
+
+        if not any(by_class.values()):
+            raise FileNotFoundError(
+                f"ReplayPool.bootstrap_from_base: {base_train_labels} exists "
+                f"but contributed zero usable images to any class — check "
+                f"that label files there actually have class ids matching "
+                f"base_data_yaml's names list ({base_names})."
+            )
 
         for cls_id, name in enumerate(base_names):
             label_files = by_class.get(cls_id, [])
