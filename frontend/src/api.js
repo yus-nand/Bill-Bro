@@ -49,15 +49,18 @@ export const getItem = (id) => client.get(`/items/${id}`);
 export const createItem = (item) => client.post("/items", item);
 // New endpoint, found directly in api_app.py — "a new batch of an
 // existing item arrived" (POST /items can't handle this case since sku
-// is unique). Overwrites the item's current batch_number/batch_arrival_date
-// (no per-batch history — items:inventory is 1:1) and adds quantity_added
-// to stock. batchNumber/batchArrivalDate are optional; omit either to
-// leave that field untouched.
-export const restockItem = (id, quantityAdded, batchNumber, batchArrivalDate) =>
+// is unique). Overwrites the item's current batch_number/batch_arrival_date/
+// expiry_date (no per-batch history — items:inventory is 1:1) and adds
+// quantity_added to stock. batchNumber/batchArrivalDate/expiryDate are
+// all optional; omit any to leave that field untouched. expiryDate added
+// alongside the original two — a new batch often has a different
+// best-by date than what's currently on file.
+export const restockItem = (id, quantityAdded, batchNumber, batchArrivalDate, expiryDate) =>
   client.patch(`/items/${id}/restock`, {
     quantity_added: quantityAdded,
     ...(batchNumber && { batch_number: batchNumber }),
     ...(batchArrivalDate && { batch_arrival_date: batchArrivalDate }),
+    ...(expiryDate && { expiry_date: expiryDate }),
   });
 
 // ── Inventory (stock levels — dynamic, changes with each sale) ──────────

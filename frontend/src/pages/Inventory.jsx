@@ -15,9 +15,14 @@ function statusTone(status) {
   return "bb-severity-info";
 }
 
-// Empty draft for the restock form — quantity required, batch fields
-// optional (per restockItem()'s contract in api.js).
-const emptyRestockDraft = { quantityAdded: "", batchNumber: "", batchArrivalDate: "" };
+// Empty draft for the restock form — quantity required, batch/expiry
+// fields optional (per restockItem()'s contract in api.js).
+const emptyRestockDraft = {
+  quantityAdded: "",
+  batchNumber: "",
+  batchArrivalDate: "",
+  expiryDate: "",
+};
 
 export default function Inventory() {
   const [items, setItems] = useState([]);
@@ -82,7 +87,8 @@ export default function Inventory() {
         itemId,
         qty,
         restockDraft.batchNumber.trim() || undefined,
-        restockDraft.batchArrivalDate || undefined
+        restockDraft.batchArrivalDate || undefined,
+        restockDraft.expiryDate || undefined
       );
       closeRestock();
       loadInventory();
@@ -138,6 +144,7 @@ export default function Inventory() {
                 <th>SKU</th>
                 <th>Price</th>
                 <th>Stock</th>
+                <th>Batch / Expiry</th>
                 <th>Status</th>
                 <th></th>
               </tr>
@@ -152,6 +159,16 @@ export default function Inventory() {
                       {item.price != null ? `₹${Number(item.price).toFixed(2)}` : "—"}
                     </td>
                     <td>{item.current_count ?? "—"}</td>
+                    <td>
+                      {item.batch_number ? (
+                        <p className="bb-alert-meta" style={{ margin: 0 }}>
+                          {item.batch_number}
+                        </p>
+                      ) : null}
+                      <p className="bb-alert-meta" style={{ margin: 0 }}>
+                        {item.expiry_date ? `Exp ${item.expiry_date}` : "—"}
+                      </p>
+                    </td>
                     <td>
                       <span className={`bb-status-pill ${statusTone(item.status)}`}>
                         {item.status || "OK"}
@@ -171,12 +188,17 @@ export default function Inventory() {
                   </tr>
                   {restockOpenFor === item.id && (
                     <tr>
-                      <td colSpan={6}>
+                      <td colSpan={7}>
                         <form
                           className="bb-restock-form"
                           onSubmit={(e) => handleRestockSubmit(e, item.id)}
                         >
                           {restockError && <p className="bb-form-error">{restockError}</p>}
+                          <p className="bb-caption" style={{ margin: "0 0 8px" }}>
+                            Batch number, arrival date, and expiry date are
+                            optional — leave any blank to keep the item's
+                            current value.
+                          </p>
                           <label className="bb-form-field">
                             <span>Quantity added *</span>
                             <input
@@ -211,6 +233,19 @@ export default function Inventory() {
                               }
                             />
                           </label>
+                          <label className="bb-form-field">
+                            <span>New expiry date</span>
+                            <input
+                              type="date"
+                              value={restockDraft.expiryDate}
+                              onChange={(e) =>
+                                setRestockDraft((d) => ({
+                                  ...d,
+                                  expiryDate: e.target.value,
+                                }))
+                              }
+                            />
+                          </label>
                           <button
                             type="submit"
                             className="bb-btn bb-btn-primary bb-btn-small"
@@ -226,7 +261,7 @@ export default function Inventory() {
               ))}
               {filtered.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="bb-table-empty">
+                  <td colSpan={7} className="bb-table-empty">
                     No items match "{query}".
                   </td>
                 </tr>
