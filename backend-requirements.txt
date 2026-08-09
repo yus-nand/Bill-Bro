@@ -1,0 +1,38 @@
+# BillBro Backend Requirements
+# Trimmed for local integration testing: psycopg2-binary/celery/redis
+# removed (nothing in api_app.py imports them — DB is SQLite, training
+# runs on a plain threading.Thread, not a task queue). Version pins on
+# the heavier ML packages loosened since they were pinned against an
+# older Python; let pip resolve what actually has wheels for your
+# installed Python version.
+
+# API Framework
+fastapi
+uvicorn
+pydantic
+
+# Database ORM
+sqlalchemy
+alembic
+# sqlite3 is built-in with Python - no need to install
+
+# ML/Computer Vision (Person B's dependencies)
+torch
+torchvision
+ultralytics
+opencv-python
+
+# Data Processing
+numpy
+pandas
+pillow
+
+# Testing
+pytest
+pytest-asyncio
+pytest-cov
+
+# Utilities
+python-dotenv
+python-multipart
+aiofiles

@@ -1,0 +1,1066 @@
+"""
+BillBro FastAPI Application
+Main API server for inventory management
+"""
+
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, Session
+from datetime import datetime, date
+from typing import List, Optional, Any
+from functools import lru_cache
+from pydantic import BaseModel
+import csv
+import io
+import json
+import os
+import re
+import threading
+import uuid
+from pathlib import Path
+
+from database import Base, Item, Inventory, Alert, ModelVersion, Transaction, TrainingJob, StoreSettings
+
+try:
+    from predict import GroceryDetector
+    DETECTOR_AVAILABLE = True
+except ImportError:
+    DETECTOR_AVAILABLE = False
+
+try:
+    from training import retrain_model, read_job_status
+    TRAINING_AVAILABLE = True
+except ImportError:
+    TRAINING_AVAILABLE = False
+
+
+def _normalize_name(s: str) -> str:
+    """Normalize a name for matching an ML-provided class name against
+    Item.name — strips everything except lowercase alphanumerics.
+
+    Item.name is human-entered Title Case with spaces ("Diet Coke",
+    "Dragon Fruit"); detection class names are the model's raw labels
+    ("diet_coke", "dragonfruit" — note: no separator at all for
+    dragonfruit specifically, per how the training dataset was labeled,
+    not a typo). A plain space<->underscore swap doesn't reconcile that
+    last case, so this strips ALL non-alphanumerics on both sides instead:
+    "Dragon Fruit", "dragon_fruit", and "dragonfruit" all normalize to
+    the same string. Use this anywhere a raw detection/class name gets
+    compared against Item.name — not needed for anything keyed by
+    item_id (Inventory, Alerts), only where a name string crosses that
+    boundary.
+    """
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+# ============================================================================
+# Setup
+# ============================================================================
+
+DATABASE_URL = "sqlite:///billbro_mvp.db"
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+app = FastAPI(
+    title="BillBro API",
+    description="Smart Inventory Management System",
+    version="1.0.0"
+)
+
+# ============================================================================
+# CORS Configuration (Allow Frontend to Call API)
+# ============================================================================
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",       # React dev server (if Person C uses React)
+        "http://localhost:5173",       # Vite dev server default port
+        "http://localhost:5174",       # Vite falls back here if 5173 is taken (e.g. by another project)
+        "http://localhost:5175",       # ...and here if both are taken
+        "http://localhost:8000",       # API docs
+        "http://localhost:8001",       # Alt backend port, when 8000 is taken locally
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+        "http://127.0.0.1:5175",
+        "http://127.0.0.1:8000",
+        "http://127.0.0.1:8001",
+        # Add your production domain here later:
+        # "https://billbro.yourcompany.com",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],              # Allow all HTTP methods
+    allow_headers=["*"],              # Allow all headers
+)
+
+# Dependency
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+# ============================================================================
+# DETECTION SETUP (Person B's YOLOv8 Model)
+# ============================================================================
+
+@lru_cache(maxsize=1)
+def get_detector() -> Optional['GroceryDetector']:
+    """Load and cache the YOLOv8 detector model"""
+    if not DETECTOR_AVAILABLE:
+        return None
+
+    model_path = "models/grocery_yolov8.pt"
+    if not Path(model_path).exists():
+        return None
+
+    try:
+        return GroceryDetector(model_path)
+    except Exception as e:
+        print(f"Warning: Could not load detector: {e}")
+        return None
+
+
+class DetectRequest(BaseModel):
+    """Request body for /detect endpoint"""
+    image: str  # Base64-encoded image (no data-URL prefix)
+    confidence_threshold: float = 0.5  # Detection confidence threshold
+
+
+class CreateItemRequest(BaseModel):
+    """
+    Request body for POST /items — matches the documented contract in
+    FOR_PERSON_C.md / RESPONSES_TO_PERSON_B_AND_C.md, plus batch_number
+    and batch_arrival_date (added on request).
+
+    Note: still no `barcode` field — that one genuinely doesn't exist in
+    the `items` table. batch_number/batch_arrival_date DO now exist
+    (see database.py) and are stored — this is the ONE current/most
+    recent batch per item, not per-batch history (items:inventory is a
+    1:1 relationship, so there's no concept of multiple concurrent
+    batches of the same item yet).
+    """
+    name: str
+    sku: str
+    price: float
+    category: Optional[str] = None
+    expiry_date: Optional[date] = None
+    low_stock_threshold: int = 5
+    batch_number: Optional[str] = None
+    batch_arrival_date: Optional[date] = None
+
+
+# ============================================================================
+# ITEMS ENDPOINTS (Manage Products)
+# ============================================================================
+
+@app.get("/items", tags=["Items"])
+def get_items(store_id: str = "store_001", db: Session = Depends(get_db)):
+    """Get all items for a store"""
+    items = db.query(Item).filter(Item.store_id == store_id).order_by(Item.name).all()
+    return [item.to_dict() for item in items]
+
+
+@app.get("/items/{item_id}", tags=["Items"])
+def get_item(item_id: int, db: Session = Depends(get_db)):
+    """Get a specific item by ID"""
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    return item.to_dict()
+
+
+@app.post("/items", tags=["Items"])
+def create_item(
+    body: CreateItemRequest,
+    store_id: str = "store_001",
+    db: Session = Depends(get_db)
+):
+    """
+    Create new item.
+
+    Takes a JSON body (CreateItemRequest) — previously this used plain
+    scalar function args, which FastAPI reads as query params, not a JSON
+    body. That mismatched every doc's example and frontend/src/api.js,
+    which both POST a JSON body. Fixed here; store_id stays a query param
+    since it's not part of the documented request body.
+    """
+    # Check if SKU already exists
+    existing = db.query(Item).filter(Item.sku == body.sku).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="SKU already exists")
+
+    # Item.name is also DB-level unique (database.py), but only SKU was
+    # pre-checked here — found during audit. Without this, a duplicate
+    # name would hit db.commit() below and raise an unhandled
+    # IntegrityError (500 with a stack trace) instead of a clean 400,
+    # same as the SKU case above.
+    existing_name = db.query(Item).filter(Item.name == body.name).first()
+    if existing_name:
+        raise HTTPException(status_code=400, detail="An item with this name already exists")
+
+    item = Item(
+        store_id=store_id,
+        name=body.name,
+        sku=body.sku,
+        price=body.price,
+        category=body.category,
+        expiry_date=body.expiry_date,
+        low_stock_threshold=body.low_stock_threshold,
+        batch_number=body.batch_number,
+        batch_arrival_date=body.batch_arrival_date
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+
+    # Create corresponding inventory record
+    inventory = Inventory(item_id=item.id, current_count=0)
+    db.add(inventory)
+    db.commit()
+
+    return {"status": "success", "item_id": item.id, "item": item.to_dict()}
+
+
+class RestockRequest(BaseModel):
+    """
+    Request body for PATCH /items/{item_id}/restock.
+
+    Covers the "new batch of an existing item arrived" case that
+    POST /items alone can't handle (sku is unique, so an existing item
+    can't be re-created). batch_number/batch_arrival_date/expiry_date,
+    if given, overwrite the item's current fields — per the "one active
+    batch per item" model, there's no history kept of the previous batch.
+
+    expiry_date added alongside the existing batch fields: a new batch
+    arriving very often means a new best-by/use-by date too (printed
+    dates on packaged goods, a fresh use-by window on produce), and
+    leaving the old item.expiry_date in place after a restock would mean
+    the catalog quietly drifts out of date the moment the old batch sells
+    through. Optional, same overwrite-only-if-given pattern as the other
+    two — a restock that doesn't mention expiry leaves it untouched.
+    """
+    quantity_added: int
+    batch_number: Optional[str] = None
+    batch_arrival_date: Optional[date] = None
+    expiry_date: Optional[date] = None
+
+
+@app.patch("/items/{item_id}/restock", tags=["Items"])
+def restock_item(
+    item_id: int,
+    body: RestockRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Record a new batch arriving for an existing item: adds to current
+    stock and overwrites the item's batch_number/batch_arrival_date/
+    expiry_date (whichever are provided).
+
+    Does NOT auto-resolve existing LOW_STOCK/STOCK_OUT alerts — those
+    stay manually resolved via PATCH /alerts/{id}, consistent with how
+    alerts are handled everywhere else in this API.
+    """
+    if body.quantity_added <= 0:
+        raise HTTPException(status_code=400, detail="quantity_added must be positive")
+
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    inventory = item.inventory
+    if not inventory:
+        raise HTTPException(status_code=404, detail="Inventory record not found for this item")
+
+    old_count = inventory.current_count
+    inventory.current_count += body.quantity_added
+    inventory.last_updated = datetime.utcnow()
+
+    if body.batch_number is not None:
+        item.batch_number = body.batch_number
+    if body.batch_arrival_date is not None:
+        item.batch_arrival_date = body.batch_arrival_date
+    if body.expiry_date is not None:
+        item.expiry_date = body.expiry_date
+
+    db.commit()
+    db.refresh(item)
+    db.refresh(inventory)
+
+    return {
+        "status": "success",
+        "item_id": item.id,
+        "item_name": item.name,
+        "old_count": old_count,
+        "new_count": inventory.current_count,
+        "batch_number": item.batch_number,
+        "batch_arrival_date": item.batch_arrival_date.isoformat() if item.batch_arrival_date else None,
+        "expiry_date": item.expiry_date.isoformat() if item.expiry_date else None
+    }
+
+
+# ============================================================================
+# INVENTORY ENDPOINTS (Stock Management)
+# ============================================================================
+
+@app.get("/inventory", tags=["Inventory"])
+def get_inventory(store_id: str = "store_001", db: Session = Depends(get_db)):
+    """Get inventory status for all items"""
+    items = db.query(Item).filter(Item.store_id == store_id).all()
+
+    status = []
+    for item in items:
+        inv_count = item.inventory.current_count if item.inventory else 0
+        alert_status = 'OK'
+
+        if inv_count == 0:
+            alert_status = 'OUT_OF_STOCK'
+        elif inv_count < item.low_stock_threshold:
+            alert_status = 'LOW_STOCK'
+
+        status.append({
+            'id': item.id,
+            'name': item.name,
+            'sku': item.sku,
+            'price': item.price,
+            'current_count': inv_count,
+            'low_stock_threshold': item.low_stock_threshold,
+            'status': alert_status,
+            # Added so the Inventory page can actually show batch/expiry
+            # info in the table, not just accept it via the Restock form
+            # — these were being written by PATCH /items/{id}/restock but
+            # never read back anywhere on this endpoint.
+            'batch_number': item.batch_number,
+            'batch_arrival_date': item.batch_arrival_date.isoformat() if item.batch_arrival_date else None,
+            'expiry_date': item.expiry_date.isoformat() if item.expiry_date else None,
+        })
+
+    return status
+
+
+class AdjustInventoryRequest(BaseModel):
+    """
+    Request body for PATCH /inventory/{item_id}.
+
+    Found during audit: `quantity`/`reason` were previously bare scalar
+    function args with defaults, which FastAPI reads as query params, not
+    a JSON body — same bug class as the old create_item() issue. Not
+    currently wired to any frontend UI (manual stock adjustment isn't
+    built yet), so this hasn't bitten anyone in practice, but it's the
+    same latent mistake and worth fixing before something calls it for
+    real. `frontend/src/api.js`'s `adjustInventory()` already sends a
+    JSON body matching this model.
+    """
+    quantity: int = 1
+    reason: str = "billed"
+
+
+@app.patch("/inventory/{item_id}", tags=["Inventory"])
+def decrement_inventory(
+    item_id: int,
+    body: AdjustInventoryRequest = AdjustInventoryRequest(),
+    db: Session = Depends(get_db)
+):
+    """Decrement stock (called during checkout)"""
+    quantity = body.quantity
+    reason = body.reason
+    inventory = db.query(Inventory).filter(Inventory.item_id == item_id).first()
+    if not inventory:
+        raise HTTPException(status_code=404, detail="Inventory record not found")
+
+    item = inventory.item
+
+    # Decrement
+    old_count = inventory.current_count
+    inventory.decrement(quantity)
+    db.commit()
+
+    # Check if alert should be triggered
+    alerts = []
+    if inventory.current_count == 0:
+        alert = Alert(
+            store_id=item.store_id,
+            item_id=item_id,
+            alert_type="STOCK_OUT",
+            severity="critical",
+            message=f"{item.name} is out of stock"
+        )
+        db.add(alert)
+        alerts.append(alert.to_dict())
+
+    elif inventory.current_count < item.low_stock_threshold:
+        # Check if alert already exists
+        existing_alert = db.query(Alert).filter(
+            Alert.item_id == item_id,
+            Alert.alert_type == "LOW_STOCK",
+            Alert.resolved == False
+        ).first()
+
+        if not existing_alert:
+            alert = Alert(
+                store_id=item.store_id,
+                item_id=item_id,
+                alert_type="LOW_STOCK",
+                severity="warning",
+                message=f"{item.name} stock low: {inventory.current_count} units"
+            )
+            db.add(alert)
+            alerts.append(alert.to_dict())
+
+    db.commit()
+
+    return {
+        "status": "success",
+        "item_id": item_id,
+        "item_name": item.name,
+        "old_count": old_count,
+        "new_count": inventory.current_count,
+        "reason": reason,
+        "alerts": alerts
+    }
+
+
+# ============================================================================
+# ALERTS ENDPOINTS
+# ============================================================================
+
+@app.get("/alerts", tags=["Alerts"])
+def get_alerts(
+    store_id: str = "store_001",
+    resolved: bool = False,
+    db: Session = Depends(get_db)
+):
+    """Get alerts"""
+    alerts = db.query(Alert).filter(
+        Alert.store_id == store_id,
+        Alert.resolved == resolved
+    ).order_by(Alert.severity.desc(), Alert.created_at.desc()).all()
+
+    return [alert.to_dict() for alert in alerts]
+
+
+@app.patch("/alerts/{alert_id}", tags=["Alerts"])
+def resolve_alert(alert_id: int, db: Session = Depends(get_db)):
+    """Resolve an alert"""
+    alert = db.query(Alert).filter(Alert.id == alert_id).first()
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+
+    alert.resolved = True
+    alert.resolved_at = datetime.utcnow()
+    db.commit()
+
+    return {"status": "success", "alert": alert.to_dict()}
+
+
+# ============================================================================
+# CHECKOUT ENDPOINTS
+# ============================================================================
+
+class CheckoutRequest(BaseModel):
+    """
+    Request body for POST /checkout/bill.
+
+    Found during audit: `detections` was previously a bare `List[dict]`
+    function parameter with no wrapping model. As the sole body
+    parameter, FastAPI treats that as "the entire request body IS this
+    array" — i.e. it would only accept a raw `[{...}, {...}]` payload,
+    not `{"detections": [...]}`. But every doc (API_CONTRACT.md) and the
+    frontend (`processCheckout()` in api.js) send the wrapped shape. This
+    is the exact same class of bug as the old create_item() query-param
+    issue — a body parameter that doesn't actually match what callers
+    send. Wrapping in a model here (rather than changing the frontend)
+    matches the already-documented, already-built contract.
+    """
+    detections: List[dict]
+
+
+@app.post("/checkout/bill", tags=["Checkout"])
+def process_checkout(
+    body: CheckoutRequest,
+    store_id: str = "store_001",
+    db: Session = Depends(get_db)
+):
+    """
+    Process checkout and decrement inventory
+    Detections format: [{"item_name": "apple", "confidence": 0.95, "quantity": 2}, ...]
+    """
+    detections = body.detections
+    cart = []
+    total = 0.0
+    alerts = []
+
+    for detection in detections:
+        item_name = detection.get('item_name')
+        confidence = detection.get('confidence', 1.0)
+        quantity = detection.get('quantity', 1)
+
+        # Find item. NOT a simple ilike() match — Item.name is human
+        # Title Case ("Diet Coke", "Dragon Fruit") but item_name here is
+        # the model's raw class name ("diet_coke", "dragonfruit" — no
+        # separator at all in that last one). ilike() can't reconcile
+        # either mismatch, which silently dropped every single detected
+        # item from every checkout until this fix. Fetching a store's
+        # items and comparing normalized names in Python is fine at this
+        # scale (a handful to a few dozen items per store).
+        candidates = db.query(Item).filter(Item.store_id == store_id).all()
+        item = next(
+            (c for c in candidates if _normalize_name(c.name) == _normalize_name(item_name)),
+            None,
+        )
+
+        if not item:
+            continue
+
+        # Per API_CONTRACT.md: an item is only checkout-detectable once
+        # status='shelved'. /detect itself can't enforce this (it's a
+        # stateless model wrapper with no DB access — it doesn't know
+        # about Item rows at all), so this is the actual enforcement
+        # point. Mirrors the "item not found" case above: silently
+        # skipped, not an error, since /detect may legitimately return a
+        # raw detection for something mid-training or not yet shelved.
+        if item.status != "shelved":
+            continue
+
+        # Add to cart
+        item_total = item.price * quantity
+        cart.append({
+            'item_id': item.id,
+            'name': item.name,
+            'price': item.price,
+            'quantity': quantity,
+            'subtotal': item_total,
+            'confidence': confidence
+        })
+        total += item_total
+
+        # Decrement inventory
+        inventory = item.inventory
+        if inventory:
+            inventory.decrement(quantity)
+
+            # Check alerts
+            if inventory.current_count == 0:
+                alert = Alert(
+                    store_id=store_id,
+                    item_id=item.id,
+                    alert_type="STOCK_OUT",
+                    severity="critical",
+                    message=f"{item.name} is out of stock"
+                )
+                db.add(alert)
+                alerts.append(alert.to_dict())
+
+            elif inventory.current_count < item.low_stock_threshold:
+                existing_alert = db.query(Alert).filter(
+                    Alert.item_id == item.id,
+                    Alert.alert_type == "LOW_STOCK",
+                    Alert.resolved == False
+                ).first()
+
+                if not existing_alert:
+                    alert = Alert(
+                        store_id=store_id,
+                        item_id=item.id,
+                        alert_type="LOW_STOCK",
+                        severity="warning",
+                        message=f"{item.name} stock low: {inventory.current_count} units"
+                    )
+                    db.add(alert)
+                    alerts.append(alert.to_dict())
+
+    # Create transaction
+    receipt_id = f"RCP_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+    transaction = Transaction(
+        store_id=store_id,
+        receipt_id=receipt_id,
+        total_amount=total,
+        items_json=json.dumps(cart),
+        status="completed"
+    )
+    db.add(transaction)
+    db.commit()
+
+    return {
+        "status": "success",
+        "receipt_id": receipt_id,
+        "cart": cart,
+        "total": total,
+        "alerts": alerts
+    }
+
+
+# ============================================================================
+# DETECTION ENDPOINT (Wraps Person B's YOLOv8 Model)
+# ============================================================================
+
+@app.post("/detect", tags=["Detection"])
+def detect(body: DetectRequest):
+    """
+    Run YOLOv8 detection on base64-encoded image.
+
+    Request:
+        image: Base64-encoded image string (no "data:image/..." prefix)
+        confidence_threshold: Detection confidence threshold (0.0-1.0)
+
+    Response:
+        {
+            "detections": [
+                {"item_name": str, "confidence": float, "bbox": [x1, y1, x2, y2]},
+                ...
+            ],
+            "processing_time_ms": int
+        }
+
+    Raised by Person B's GroceryDetector:
+        - ValueError: If image_b64 cannot be decoded
+        - FileNotFoundError: If model file not found
+    """
+    detector = get_detector()
+
+    if detector is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Detection model not available. Check that models/grocery_yolov8.pt exists and ultralytics is installed."
+        )
+
+    try:
+        result = detector.detect_from_base64(
+            body.image,
+            confidence_threshold=body.confidence_threshold
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid image: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Detection failed: {str(e)}")
+
+
+# ============================================================================
+# MODELS ENDPOINTS
+# ============================================================================
+#
+# Fix applied per Person B's FOR_PERSON_A_MODELS_ENDPOINTS.md: the old
+# get_active_model() queried the SQL ModelVersion table, but nothing ever
+# writes to it — StoreModelManager.register_version() (called at the end
+# of every successful retrain_model()) writes to models/versions.json
+# instead, by design, to keep the DB out of the ML code. That meant this
+# route 404'd no matter how many models had actually been trained. Reading
+# from StoreModelManager directly instead — same fix Person B proposed,
+# applied here rather than left as a doc.
+
+try:
+    from predict import StoreModelManager
+    MODEL_MANAGER_AVAILABLE = True
+except ImportError:
+    MODEL_MANAGER_AVAILABLE = False
+
+
+@app.get("/models/active", tags=["Models"])
+def get_active_model(store_id: str = "store_001"):
+    """Get the active model version for a store, from StoreModelManager's
+    models/versions.json index — NOT the SQL ModelVersion table (see note
+    above)."""
+    if not MODEL_MANAGER_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Model manager not available.")
+
+    manager = StoreModelManager(models_dir="models")
+    history = manager.list_versions(store_id)
+    active = next((v for v in reversed(history) if v.get("is_active")), None)
+
+    if not active:
+        raise HTTPException(status_code=404, detail="No active model found")
+
+    return active
+
+
+@app.get("/models", tags=["Models"])
+def list_models(store_id: str = "store_001"):
+    """Version history for a store, newest last. Versions are strings
+    ("v1", "v2", ...), not numeric ids — matches API_CONTRACT.md."""
+    if not MODEL_MANAGER_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Model manager not available.")
+
+    manager = StoreModelManager(models_dir="models")
+    return manager.list_versions(store_id)
+
+
+@app.post("/models/{version}/activate", tags=["Models"])
+@app.post("/models/{version}/rollback", tags=["Models"])
+def activate_model(version: str, store_id: str = "store_001"):
+    """Point {store_id}_latest.pt at the given version. Same operation
+    either way — StoreModelManager doesn't distinguish "activate an older
+    version" from "roll back to it"."""
+    if not MODEL_MANAGER_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Model manager not available.")
+
+    manager = StoreModelManager(models_dir="models")
+    try:
+        manager.rollback(store_id, version)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"status": "success", "store_id": store_id, "active_version": version}
+
+
+# ============================================================================
+# TRAINING ENDPOINTS (Add Item -> Train -> Shelve, wraps Person B's training.py)
+# ============================================================================
+
+# The 6-class base model's data.yaml, repo root. Only read on a store's
+# FIRST ever training run (bootstraps training.py's ReplayPool) — every
+# run after that ignores it and uses the persisted pool instead, so this
+# never needs per-store configuration.
+BASE_DATA_YAML = "data.yaml"
+
+
+@app.post("/training/upload_images", tags=["Training"])
+def upload_training_images(
+    # Found during audit: these three were bare scalar params with no
+    # Form() annotation. In a route with File(...), FastAPI does NOT
+    # auto-treat sibling scalars as form fields — without Form(), they're
+    # read as query parameters. The frontend sends them as multipart form
+    # fields (FormData.append), which FastAPI would never see this way.
+    # item_id (required, no default) and item_name (required, no default,
+    # and frontend never even sent it — see api.js) would both 422 with
+    # "field required" on the very first real upload. Fixed by declaring
+    # them explicitly as Form fields, matching what's actually sent.
+    item_id: int = Form(...),
+    item_name: str = Form(...),
+    store_id: str = Form("store_001"),
+    images: List[UploadFile] = File(...),
+    db: Session = Depends(get_db),
+):
+    """
+    Save staff-captured photos for a new item and kick off fine-tuning in
+    the background (retrain_model() is a blocking call — ~15 min GPU /
+    ~1 hr CPU per Person B — so it never runs inside the request handler).
+
+    item_name should already be lowercase/underscored (e.g.
+    "maggi_noodles") — training.py uses it directly as the new class
+    label. Flips Item.status to 'training' immediately, then
+    'shelved'/'failed' once the background job settles.
+    """
+    if not TRAINING_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Training pipeline not available. Check that training.py's dependencies "
+                   "(ultralytics, torch, pyyaml) are installed."
+        )
+
+    # retrain_model() needs this to bootstrap the replay pool on a store's
+    # first-ever run — without it, the background thread below would fail
+    # with an uncaught FileNotFoundError *before* any job-status write, so
+    # the item would silently get stuck at 'training' forever with no
+    # error surfaced anywhere. Fail fast here instead, at request time.
+    if not Path(BASE_DATA_YAML).exists():
+        raise HTTPException(
+            status_code=503,
+            detail=f"{BASE_DATA_YAML} not found at repo root — required to bootstrap the "
+                    "replay pool for training. Add the base model's data.yaml (6 classes: "
+                    "apple, banana, dragonfruit, custard_apple, diet_coke, pepsi) before "
+                    "using this endpoint."
+        )
+
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    upload_dir = Path("training_uploads") / f"item_{item_id}"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    image_paths = []
+    for i, img in enumerate(images):
+        dest = upload_dir / f"{item_name}_{i:03d}.jpg"
+        with open(dest, "wb") as f:
+            f.write(img.file.read())
+        image_paths.append(str(dest))
+
+    if len(image_paths) < 5:
+        raise HTTPException(status_code=400, detail="Need at least 5 photos")
+
+    job_id = str(uuid.uuid4())
+
+    def run():
+        # Belt-and-suspenders: retrain_model() already writes
+        # status="failed" to the job file for its own documented failure
+        # modes (too few labeled images, mAP50 below threshold). This
+        # catches anything ELSE unexpected (GPU error, corrupt image,
+        # disk full, etc.) so the item doesn't get stuck at 'training'
+        # forever with zero explanation. Note: training.py doesn't expose
+        # a public "mark job failed" function, so an exception here means
+        # read_job_status(job_id) will still report "unknown" — only
+        # Item.status reliably reflects the failure in that case.
+        try:
+            retrain_model(
+                store_id=store_id,
+                item_name=item_name,
+                image_paths=image_paths,
+                base_data_yaml=BASE_DATA_YAML,
+                job_id=job_id,
+                item_id=item_id,
+            )
+        except Exception as e:
+            print(f"Training job {job_id} (item {item_id}) crashed unexpectedly: {e}")
+            db_err = SessionLocal()
+            try:
+                it = db_err.query(Item).filter(Item.id == item_id).first()
+                if it:
+                    it.status = "failed"
+                    db_err.commit()
+            finally:
+                db_err.close()
+            return
+
+        # Flip item status once the job file settles. Uses its own DB
+        # session rather than the request's `db` — this runs in a
+        # background thread well after the request (and its session)
+        # have already returned.
+        result = read_job_status(job_id)
+        db2 = SessionLocal()
+        try:
+            it = db2.query(Item).filter(Item.id == item_id).first()
+            if it:
+                it.status = "shelved" if result.get("status") == "success" else "failed"
+                db2.commit()
+        finally:
+            db2.close()
+
+    item.status = "training"
+    db.commit()
+    threading.Thread(target=run, daemon=True).start()
+
+    return {"job_id": job_id, "item_id": item_id, "status": "training"}
+
+
+@app.get("/training/job/{job_id}", tags=["Training"])
+def get_training_job(job_id: str):
+    """
+    Poll training job status. Reads straight from Person B's file-based
+    tracker (models/jobs/{job_id}.json via read_job_status()) — this does
+    NOT query the TrainingJob SQL table; training.py is intentionally
+    decoupled from the DB layer (see its module docstring). Response
+    shape matches TrainingJob's columns: status, progress, item_id,
+    current_epoch, metrics, error_message, created_at, completed_at
+    (plus stage/model_version as harmless extras).
+    """
+    if not TRAINING_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Training pipeline not available.")
+
+    result = read_job_status(job_id)
+    if result.get("status") == "unknown":
+        raise HTTPException(status_code=404, detail="Job not found")
+    return result
+
+
+# ============================================================================
+# ADMIN ENDPOINTS (Week 7 — bulk CSV import, store settings)
+#
+# Built against what frontend/src/api.js's "PROPOSED" section already
+# expected before either side had a real endpoint: uploadBulkCsv(file) ->
+# POST /admin/bulk_upload (multipart, field "file"), updateStoreSettings()
+# -> PUT /admin/settings (JSON body). Adding GET /admin/settings too so the
+# Admin page has something to read on load, not just write to.
+# ============================================================================
+
+class StoreSettingsRequest(BaseModel):
+    """
+    Request body for PUT /admin/settings. All fields optional — this is a
+    partial update (same pattern as RestockRequest's optional batch
+    fields): only send the settings you want to change, existing values
+    are left alone.
+    """
+    tax_rate_pct: Optional[float] = None
+    currency_symbol: Optional[str] = None
+    low_stock_default_threshold: Optional[int] = None
+
+
+def _get_or_create_settings(db: Session, store_id: str) -> StoreSettings:
+    """Every store implicitly has settings (defaults from the column
+    definitions in database.py) even before any PUT has ever been sent —
+    upsert-on-read so GET /admin/settings never 404s for a store that
+    simply hasn't customized anything yet."""
+    settings = db.query(StoreSettings).filter(StoreSettings.store_id == store_id).first()
+    if not settings:
+        settings = StoreSettings(store_id=store_id)
+        db.add(settings)
+        db.commit()
+        db.refresh(settings)
+    return settings
+
+
+@app.get("/admin/settings", tags=["Admin"])
+def get_store_settings(store_id: str = "store_001", db: Session = Depends(get_db)):
+    """Get this store's settings (tax rate, currency symbol, default
+    low-stock threshold), creating a default row if none exists yet."""
+    settings = _get_or_create_settings(db, store_id)
+    return settings.to_dict()
+
+
+@app.put("/admin/settings", tags=["Admin"])
+def update_store_settings(
+    body: StoreSettingsRequest,
+    store_id: str = "store_001",
+    db: Session = Depends(get_db)
+):
+    """Partial update of this store's settings — only fields present in
+    the body are changed. Matches updateStoreSettings(settings) in
+    api.js, which PUTs whatever subset of fields the Admin form has."""
+    settings = _get_or_create_settings(db, store_id)
+
+    if body.tax_rate_pct is not None:
+        settings.tax_rate_pct = body.tax_rate_pct
+    if body.currency_symbol is not None:
+        settings.currency_symbol = body.currency_symbol
+    if body.low_stock_default_threshold is not None:
+        settings.low_stock_default_threshold = body.low_stock_default_threshold
+
+    db.commit()
+    db.refresh(settings)
+    return {"status": "success", "settings": settings.to_dict()}
+
+
+@app.post("/admin/bulk_upload", tags=["Admin"])
+def bulk_upload_items(
+    store_id: str = Form("store_001"),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Bulk create/update items from a CSV file.
+
+    Expected columns (header row required): name, sku, price, and
+    optionally category, expiry_date (YYYY-MM-DD), low_stock_threshold.
+    Upserts by sku — matches how POST /items already treats sku as the
+    unique key (name is unique too, but sku is the one this endpoint's
+    "does this row already exist" check is built around, since it's the
+    more natural bulk-catalog key). New items are created with status
+    "pending" and a zeroed inventory row, exactly like POST /items does;
+    existing items (matched by sku) have name/price/category/
+    expiry_date/low_stock_threshold overwritten but status and current
+    stock count are left untouched — a bulk catalog re-upload shouldn't
+    silently wipe someone's live stock count or kick a shelved item back
+    to undetectable.
+
+    Per-row errors (bad price, missing required field, etc.) are
+    collected rather than failing the whole upload — one bad row in a
+    500-row CSV shouldn't block the other 499.
+
+    File.filename here is attacker/user-controlled input from the
+    multipart request, used only for the .csv extension check below —
+    never used as a filesystem path, so no path-traversal exposure.
+    """
+    if not file.filename or not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="File must be a .csv")
+
+    raw = file.file.read()
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="File must be UTF-8 encoded text")
+
+    reader = csv.DictReader(io.StringIO(text))
+    if not reader.fieldnames or "name" not in reader.fieldnames or "sku" not in reader.fieldnames or "price" not in reader.fieldnames:
+        raise HTTPException(
+            status_code=400,
+            detail="CSV must have a header row with at least: name, sku, price"
+        )
+
+    created = 0
+    updated = 0
+    errors = []
+
+    for i, row in enumerate(reader, start=2):  # start=2: row 1 is the header
+        name = (row.get("name") or "").strip()
+        sku = (row.get("sku") or "").strip()
+        price_raw = (row.get("price") or "").strip()
+
+        if not name or not sku or not price_raw:
+            errors.append({"row": i, "error": "name, sku, and price are required"})
+            continue
+
+        try:
+            price = float(price_raw)
+        except ValueError:
+            errors.append({"row": i, "error": f"price '{price_raw}' is not a number"})
+            continue
+
+        threshold_raw = (row.get("low_stock_threshold") or "").strip()
+        low_stock_threshold = 5
+        if threshold_raw:
+            try:
+                low_stock_threshold = int(threshold_raw)
+            except ValueError:
+                errors.append({"row": i, "error": f"low_stock_threshold '{threshold_raw}' is not an integer"})
+                continue
+
+        expiry_raw = (row.get("expiry_date") or "").strip()
+        expiry_value = None
+        if expiry_raw:
+            try:
+                expiry_value = datetime.strptime(expiry_raw, "%Y-%m-%d").date()
+            except ValueError:
+                errors.append({"row": i, "error": f"expiry_date '{expiry_raw}' must be YYYY-MM-DD"})
+                continue
+
+        category = (row.get("category") or "").strip() or None
+
+        existing = db.query(Item).filter(Item.sku == sku).first()
+        if existing:
+            # Also guard the name-uniqueness constraint on update, same
+            # reasoning as create_item()'s pre-check — renaming row A to
+            # collide with existing row B would otherwise 500 on commit.
+            name_clash = db.query(Item).filter(Item.name == name, Item.id != existing.id).first()
+            if name_clash:
+                errors.append({"row": i, "error": f"name '{name}' already used by a different item"})
+                continue
+            existing.name = name
+            existing.price = price
+            existing.category = category
+            existing.expiry_date = expiry_value
+            existing.low_stock_threshold = low_stock_threshold
+            updated += 1
+        else:
+            name_clash = db.query(Item).filter(Item.name == name).first()
+            if name_clash:
+                errors.append({"row": i, "error": f"name '{name}' already exists"})
+                continue
+            item = Item(
+                store_id=store_id,
+                name=name,
+                sku=sku,
+                price=price,
+                category=category,
+                expiry_date=expiry_value,
+                low_stock_threshold=low_stock_threshold,
+            )
+            db.add(item)
+            db.flush()  # assigns item.id without committing, so the inventory row below can reference it
+            db.add(Inventory(item_id=item.id, current_count=0))
+            created += 1
+
+    db.commit()
+
+    return {
+        "status": "success",
+        "created": created,
+        "updated": updated,
+        "error_count": len(errors),
+        "errors": errors,
+    }
+
+
+# ============================================================================
+# HEALTH CHECK
+# ============================================================================
+
+@app.get("/health", tags=["System"])
+def health_check():
+    """API health check"""
+    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
