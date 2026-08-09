@@ -789,6 +789,24 @@ body {
   font-size: 12.5px;
 }
 
+/* ─── Admin (store settings + bulk upload) ───────────────────────────── */
+
+.bb-admin-settings-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.bb-admin-settings-form .bb-form-field {
+  min-width: 160px;
+  max-width: 220px;
+}
+
+.bb-admin-settings-form .bb-form-error {
+  flex-basis: 100%;
+  margin-bottom: 0;
+}
+
 /* ─── Image capture grid (Add Item) ──────────────────────────────────── */
 
 .bb-image-grid {

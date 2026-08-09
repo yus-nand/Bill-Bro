@@ -158,7 +158,21 @@ export const getTrainingJob = (jobId) => client.get(`/training/job/${jobId}`);
 // "Open questions"). Calling these will 404 until they exist.
 // ─────────────────────────────────────────────────────────────────────────
 
-// Admin (Week 7)
+// Admin — built and confirmed live this session. GET/PUT /admin/settings
+// upserts a default row on first read (never 404s), so getStoreSettings()
+// is safe to call on page load even for a store that's never customized
+// anything. PUT is a partial update — only send the fields that changed.
+export const getStoreSettings = () => client.get("/admin/settings");
+export const updateStoreSettings = (settings) =>
+  client.put("/admin/settings", settings);
+
+// POST /admin/bulk_upload — multipart, field "file", CSV with a
+// name/sku/price header row required (category/expiry_date/
+// low_stock_threshold optional). Upserts by sku. Response:
+// { status, created, updated, error_count, errors: [{ row, error }] }
+// — per-row errors are collected, not fatal, so a bad row doesn't block
+// the rest of the file. Surface `errors` directly, don't just show
+// created/updated counts.
 export const uploadBulkCsv = (file) => {
   const form = new FormData();
   form.append("file", file);
@@ -166,8 +180,6 @@ export const uploadBulkCsv = (file) => {
     headers: { "Content-Type": "multipart/form-data" },
   });
 };
-export const updateStoreSettings = (settings) =>
-  client.put("/admin/settings", settings);
 
 // Model version history / rollback (Week 8) — doc only confirms
 // GET /models/active, not a full version list or activate/rollback.
