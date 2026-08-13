@@ -560,7 +560,7 @@ def retrain_model(
 
     model = YOLO(current_model_path)
     run_name = f"{store_id}_{item_name}_{_timestamp_slug()}"
-    model.train(
+    train_results = model.train(
         data=data_yaml_path,
         epochs=epochs,
         freeze=freeze,
@@ -579,7 +579,20 @@ def retrain_model(
 
     _update_job(job_id, status="running", progress=85, stage="validating", item_id=item_id)
 
-    best_weights = Path(work_dir) / "runs" / run_name / "weights" / "best.pt"
+    # Don't reconstruct where YOLO saved the run — ask it directly via
+    # train_results.save_dir. Manually rebuilding this path as
+    # `Path(work_dir) / "runs" / run_name / ...` broke on ultralytics
+    # 8.4.116: that version silently nests a relative `project` path
+    # under its own `runs/<task>/` directory (here:
+    # "<cwd>/runs/detect/training_runs/runs/<run_name>/weights/best.pt"
+    # instead of the literal "training_runs/runs/<run_name>/weights/best.pt"
+    # this used to assume), so the reconstructed path pointed at a
+    # directory that never existed and crashed with a bare
+    # FileNotFoundError right after validation had already run
+    # successfully. save_dir is what ultralytics itself actually used,
+    # so this is correct regardless of how any given version resolves
+    # relative project paths.
+    best_weights = Path(train_results.save_dir) / "weights" / "best.pt"
     val_model = YOLO(str(best_weights))
     metrics = val_model.val(data=data_yaml_path, imgsz=640, verbose=False)
 
