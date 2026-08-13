@@ -9,13 +9,13 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 from datetime import datetime, date
 from typing import List, Optional, Any
-from functools import lru_cache
 from pydantic import BaseModel
 import csv
 import io
 import json
 import os
 import re
+import shutil
 import threading
 import uuid
 from pathlib import Path
@@ -23,10 +23,15 @@ from pathlib import Path
 from database import Base, Item, Inventory, Alert, ModelVersion, Transaction, TrainingJob, StoreSettings
 
 try:
-    from predict import GroceryDetector
+    from predict import GroceryDetector, StoreModelManager
     DETECTOR_AVAILABLE = True
+    # get_detector() (below) needs this defined before it's declared, not
+    # just in the later "MODELS ENDPOINTS" section — it now resolves the
+    # active model via StoreModelManager on every call, not a fixed path.
+    MODEL_MANAGER_AVAILABLE = True
 except ImportError:
     DETECTOR_AVAILABLE = False
+    MODEL_MANAGER_AVAILABLE = False
 
 try:
     from training import retrain_model, read_job_status
@@ -54,6 +59,20 @@ def _normalize_name(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
 
+def _slugify_class_name(s: str) -> str:
+    """Convert an Item.name ("OnePlus Buds 4") into a training class label
+    ("oneplus_buds_4") — mirrors the frontend's toClassName() exactly
+    (imageUtils.js), since training.py uses this string directly as the
+    new class's name and both sides need to agree on it. Used by the
+    retrain-from-existing-photos endpoint, which (unlike
+    upload_training_images) has no request body for the frontend to pass
+    an already-computed class name through — this derives it fresh from
+    the item's own row instead.
+    """
+    slug = re.sub(r"[^a-z0-9]+", "_", s.strip().lower())
+    return slug.strip("_")
+
+
 # ============================================================================
 # Setup
 # ============================================================================
@@ -71,6 +90,23 @@ app = FastAPI(
 # ============================================================================
 # CORS Configuration (Allow Frontend to Call API)
 # ============================================================================
+# allow_origin_regex added so this also works from a phone on the same
+# WiFi — the frontend's dev server now binds to all interfaces
+# (vite.config.js server.host: true) and infers its API target from
+# whatever host loaded the page (config.js), so opening the app at e.g.
+# http://192.168.1.42:5173 has it call http://192.168.1.42:8000. Without
+# this regex, that origin isn't in the static allow_origins list below
+# and every request gets blocked by the browser's CORS check before it
+# even reaches this server. Restricted to RFC 1918 private ranges
+# (192.168.x.x, 10.x.x.x, 172.16-31.x.x) on the same handful of dev
+# ports as the list below — not a wildcard, so this doesn't open the API
+# up to arbitrary origins on the public internet.
+_LAN_ORIGIN_REGEX = (
+    r"^http://(192\.168\.\d{1,3}\.\d{1,3}"
+    r"|10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
+    r"|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})"
+    r":(3000|5173|5174|5175|8000|8001)$"
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -89,6 +125,7 @@ app.add_middleware(
         # Add your production domain here later:
         # "https://billbro.yourcompany.com",
     ],
+    allow_origin_regex=_LAN_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],              # Allow all HTTP methods
     allow_headers=["*"],              # Allow all headers
@@ -107,21 +144,56 @@ def get_db():
 # DETECTION SETUP (Person B's YOLOv8 Model)
 # ============================================================================
 
-@lru_cache(maxsize=1)
+# Keyed by resolved model path rather than a single @lru_cache(maxsize=1)
+# slot — see get_detector()'s docstring for why that mattered.
+_detector_cache: dict[str, "GroceryDetector"] = {}
+
+
 def get_detector() -> Optional['GroceryDetector']:
-    """Load and cache the YOLOv8 detector model"""
+    """Load (and cache) the currently ACTIVE detector for store_001.
+
+    This used to be `@lru_cache(maxsize=1)` hardcoded to
+    "models/grocery_yolov8.pt" — meaning /detect never actually consulted
+    StoreModelManager at all. The whole Add Item -> Train -> Shelve loop,
+    and the Models page's Activate/Rollback buttons, only ever updated
+    models/versions.json and models/store_001_latest.pt; /detect just kept
+    using the original base file forever, completely unaffected by any of
+    it. A freshly trained/shelved item would never actually become
+    detectable at checkout, and "roll back instantly if a retrain doesn't
+    go well" (Models.jsx's own caption) did nothing in practice — there
+    was nothing live to roll back FROM.
+
+    Fixed by asking StoreModelManager.active_model_path() — the same
+    resolver register_version()/rollback() actually write to — instead of
+    a fixed path. Cached by resolved path (not a single global slot) so
+    switching the active model takes effect on the very next /detect call
+    instead of requiring a server restart.
+    """
     if not DETECTOR_AVAILABLE:
         return None
 
-    model_path = "models/grocery_yolov8.pt"
-    if not Path(model_path).exists():
-        return None
+    if MODEL_MANAGER_AVAILABLE:
+        try:
+            manager = StoreModelManager(models_dir="models")
+            model_path = manager.active_model_path("store_001")
+        except FileNotFoundError as e:
+            print(f"Warning: no active model resolvable: {e}")
+            return None
+    else:
+        # predict.StoreModelManager itself failed to import — fall back
+        # to the original fixed path rather than hard-failing detection.
+        model_path = "models/grocery_yolov8.pt"
+        if not Path(model_path).exists():
+            return None
 
-    try:
-        return GroceryDetector(model_path)
-    except Exception as e:
-        print(f"Warning: Could not load detector: {e}")
-        return None
+    if model_path not in _detector_cache:
+        try:
+            _detector_cache[model_path] = GroceryDetector(model_path)
+        except Exception as e:
+            print(f"Warning: Could not load detector at {model_path}: {e}")
+            return None
+
+    return _detector_cache[model_path]
 
 
 class DetectRequest(BaseModel):
@@ -223,6 +295,51 @@ def create_item(
     db.commit()
 
     return {"status": "success", "item_id": item.id, "item": item.to_dict()}
+
+
+@app.delete("/items/{item_id}", tags=["Items"])
+def delete_item(item_id: int, db: Session = Depends(get_db)):
+    """
+    Permanently remove an item — added so QA/testing (adding a throwaway
+    item to test the training flow, then wanting it gone) doesn't need
+    someone hand-editing the database every time.
+
+    Item.inventory / .alerts / .training_data all have
+    cascade='all, delete-orphan' set in database.py, so db.delete(item)
+    takes those with it automatically. transactions.items_json is a
+    point-in-time JSON snapshot rather than a live foreign key (see
+    Transaction model), so old receipts mentioning a since-deleted item
+    are untouched and still readable — deleting the catalog entry doesn't
+    rewrite sales history. Also clears any staged training photos on disk
+    for this item, so a later item reusing the same id (SQLite reuses
+    freed autoincrement ids) doesn't inherit orphaned photos.
+
+    Blocked (409) while status == 'training': the background thread in
+    /training/upload_images and /items/{id}/retrain both re-fetch the
+    Item row by id when the run finishes and just no-op if it's gone
+    (see the `if it:` guards there), so deleting mid-run wouldn't crash
+    anything — but silently vanishing a row the user is actively watching
+    progress on is more confusing than just asking them to wait or
+    dismiss the job first.
+    """
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    if item.status == "training":
+        raise HTTPException(
+            status_code=409,
+            detail="This item is currently training — wait for it to finish (or fail) before deleting it.",
+        )
+
+    item_name = item.name
+    db.delete(item)
+    db.commit()
+
+    upload_dir = Path("training_uploads") / f"item_{item_id}"
+    if upload_dir.exists():
+        shutil.rmtree(upload_dir, ignore_errors=True)
+
+    return {"status": "success", "item_id": item_id, "item_name": item_name}
 
 
 class RestockRequest(BaseModel):
@@ -651,12 +768,10 @@ def detect(body: DetectRequest):
 # route 404'd no matter how many models had actually been trained. Reading
 # from StoreModelManager directly instead — same fix Person B proposed,
 # applied here rather than left as a doc.
-
-try:
-    from predict import StoreModelManager
-    MODEL_MANAGER_AVAILABLE = True
-except ImportError:
-    MODEL_MANAGER_AVAILABLE = False
+#
+# StoreModelManager itself is imported once, up near GroceryDetector at
+# the top of this file — get_detector() needs MODEL_MANAGER_AVAILABLE
+# defined before it's declared, so that's where it lives now.
 
 
 @app.get("/models/active", tags=["Models"])
@@ -852,6 +967,108 @@ def get_training_job(job_id: str):
     if result.get("status") == "unknown":
         raise HTTPException(status_code=404, detail="Job not found")
     return result
+
+
+@app.post("/items/{item_id}/retrain", tags=["Training"])
+def retrain_from_existing_photos(item_id: int, db: Session = Depends(get_db)):
+    """
+    Retrain an EXISTING item using photos already saved on disk from a
+    prior upload_training_images call — training_uploads/item_{id}/ is
+    never cleaned up after a run, so its files are still there. Added
+    for Inventory's Retrain flow's "reuse existing photos" path, as an
+    alternative to always requiring a fresh capture-and-upload like a
+    brand-new Add Item run does.
+
+    No request body: item_name is derived straight from the Item row via
+    _slugify_class_name() (mirrors the frontend's toClassName() exactly),
+    and images are whatever's already on disk. Everything else — the
+    background thread, job file tracking, item status flips on
+    success/failure — is identical to upload_training_images(), just
+    skipping the upload step since there's nothing new to upload.
+    """
+    if not TRAINING_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Training pipeline not available. Check that training.py's dependencies "
+                   "(ultralytics, torch, pyyaml) are installed."
+        )
+
+    if not Path(BASE_DATA_YAML).exists():
+        raise HTTPException(
+            status_code=503,
+            detail=f"{BASE_DATA_YAML} not found at repo root — required to bootstrap the "
+                    "replay pool for training."
+        )
+
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    upload_dir = Path("training_uploads") / f"item_{item_id}"
+    if not upload_dir.exists():
+        raise HTTPException(
+            status_code=400,
+            detail="No existing photos found for this item — capture new ones instead."
+        )
+
+    image_paths = sorted(str(p) for p in upload_dir.iterdir() if p.is_file())
+    if len(image_paths) < 5:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Only {len(image_paths)} existing photo(s) on disk for this item — "
+                   "need at least 5. Capture new ones instead."
+        )
+
+    item_name = _slugify_class_name(item.name)
+    job_id = str(uuid.uuid4())
+
+    def run():
+        # Same belt-and-suspenders pattern as upload_training_images()'s
+        # background thread — see that endpoint's comments for the full
+        # reasoning (an exception here means read_job_status(job_id)
+        # keeps reporting whatever it last wrote, so Item.status is the
+        # only reliable failure signal in that case).
+        try:
+            retrain_model(
+                store_id="store_001",
+                item_name=item_name,
+                image_paths=image_paths,
+                base_data_yaml=BASE_DATA_YAML,
+                job_id=job_id,
+                item_id=item_id,
+            )
+        except Exception as e:
+            print(f"Retrain job {job_id} (item {item_id}) crashed unexpectedly: {e}")
+            db_err = SessionLocal()
+            try:
+                it = db_err.query(Item).filter(Item.id == item_id).first()
+                if it:
+                    it.status = "failed"
+                    db_err.commit()
+            finally:
+                db_err.close()
+            return
+
+        result = read_job_status(job_id)
+        db2 = SessionLocal()
+        try:
+            it = db2.query(Item).filter(Item.id == item_id).first()
+            if it:
+                it.status = "shelved" if result.get("status") == "success" else "failed"
+                db2.commit()
+        finally:
+            db2.close()
+
+    item.status = "training"
+    db.commit()
+    threading.Thread(target=run, daemon=True).start()
+
+    return {
+        "job_id": job_id,
+        "item_id": item_id,
+        "status": "training",
+        "photos_used": len(image_paths),
+    }
 
 
 # ============================================================================
