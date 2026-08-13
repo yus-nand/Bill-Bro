@@ -17,6 +17,7 @@ import { useEffect, useState } from "react";
 import PageShell from "../components/PageShell.jsx";
 import { getModelVersions, activateModel } from "../api.js";
 import { API_BASE_URL } from "../config.js";
+import { IconCube } from "../components/Icons.jsx";
 
 const METRIC_LABELS = {
   mAP50: "mAP@50",
@@ -95,7 +96,7 @@ export default function Models() {
   return (
     <PageShell
       group="Catalog & Management"
-      icon="🤖"
+      icon={<IconCube />}
       title="Models"
       caption="See what's trained, how well it's performing, and roll back if needed."
       status={statusMessage}

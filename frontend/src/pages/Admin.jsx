@@ -7,7 +7,8 @@
 import { useEffect, useRef, useState } from "react";
 import PageShell from "../components/PageShell.jsx";
 import { getStoreSettings, updateStoreSettings, uploadBulkCsv } from "../api.js";
-import { API_BASE_URL } from "../config.js";
+import { API_BASE_URL, STORE_ID, APP_VERSION } from "../config.js";
+import { IconSettings } from "../components/Icons.jsx";
 
 export default function Admin() {
   // ── Store settings ───────────────────────────────────────────────────
@@ -142,13 +143,13 @@ export default function Admin() {
   return (
     <PageShell
       group="Catalog & Management"
-      icon="⚙️"
+      icon={<IconSettings />}
       title="Admin"
       caption="Store settings, bulk edits, and manual overrides."
       status={statusMessage}
     >
       {settingsState === "ready" && draft && (
-        <div className="bb-card">
+        <div className="bb-card" data-tour="admin-settings">
           <p className="bb-roadmap-title" style={{ marginBottom: 12 }}>
             Store settings
           </p>
@@ -278,6 +279,21 @@ export default function Admin() {
             )}
           </div>
         )}
+      </div>
+
+      <div className="bb-card bb-env-card">
+        <p className="bb-roadmap-title" style={{ marginBottom: 8 }}>
+          Environment
+        </p>
+        <p className="bb-caption" style={{ margin: "0 0 2px" }}>
+          Store: <code>{STORE_ID}</code>
+        </p>
+        <p className="bb-caption" style={{ margin: "0 0 2px" }}>
+          API: <code>{API_BASE_URL}</code>
+        </p>
+        <p className="bb-caption" style={{ margin: 0 }}>
+          Version: <code>{APP_VERSION}</code>
+        </p>
       </div>
     </PageShell>
   );

@@ -6,6 +6,8 @@ import { useEffect, useState } from "react";
 import PageShell from "../components/PageShell.jsx";
 import { getAlerts, resolveAlert } from "../api.js";
 import { API_BASE_URL } from "../config.js";
+import { useToast } from "../context/ToastContext.jsx";
+import { IconAlert, IconCheck } from "../components/Icons.jsx";
 
 const SEVERITY_ORDER = ["critical", "warning", "info"];
 const SEVERITY_LABEL = { critical: "Critical", warning: "Warning", info: "Info" };
@@ -26,6 +28,7 @@ export default function Alerts() {
   const [alerts, setAlerts] = useState([]);
   const [state, setState] = useState("loading"); // loading | ready | error
   const [resolvingId, setResolvingId] = useState(null);
+  const toast = useToast();
 
   useEffect(() => {
     let cancelled = false;
@@ -45,13 +48,17 @@ export default function Alerts() {
   }, []);
 
   const handleResolve = async (id) => {
+    const alert = alerts.find((a) => a.id === id);
     setResolvingId(id);
     try {
       await resolveAlert(id);
       setAlerts((prev) => prev.filter((a) => a.id !== id));
-    } catch {
-      // Leave the alert in place if the request fails; a proper toast/
-      // error surface can replace this once the endpoint is confirmed.
+      toast.success(`Resolved: ${alert?.item_name ? `${alert.item_name} — ` : ""}${alert?.message || "alert"}.`);
+    } catch (err) {
+      // Leave the alert in place if the request fails.
+      toast.error(
+        err?.response?.data?.detail || `Couldn't resolve that alert — check the backend at ${API_BASE_URL}.`
+      );
     } finally {
       setResolvingId(null);
     }
@@ -74,11 +81,31 @@ export default function Alerts() {
   return (
     <PageShell
       group="Store Operations"
-      icon="🚨"
+      icon={<IconAlert />}
       title="Alerts"
       caption="Know the moment something needs attention."
       status={statusMessage}
     >
+      {state === "loading" && (
+        <div className="bb-card">
+          {[0, 1, 2].map((i) => (
+            <div key={i} style={{ padding: "10px 0" }}>
+              <div className="bb-skeleton-line" style={{ width: "70%", marginBottom: 6 }} />
+              <div className="bb-skeleton-line" style={{ width: "35%", height: 9 }} />
+            </div>
+          ))}
+        </div>
+      )}
+
+      {state === "ready" && alerts.length === 0 && (
+        <div className="bb-card bb-empty-state">
+          <div className="bb-empty-state-icon" aria-hidden="true">
+            <IconCheck width={28} height={28} />
+          </div>
+          <p>All clear — nothing needs your attention right now.</p>
+        </div>
+      )}
+
       {state === "ready" && alerts.length > 0 && (
         <div>
           {grouped.map((group) => (

@@ -8,6 +8,7 @@ import PageShell from "../components/PageShell.jsx";
 import { detectImage, processCheckout } from "../api.js";
 import { aggregateDetections } from "../utils.js";
 import { API_BASE_URL } from "../config.js";
+import { IconCart, IconCamera, IconVideo, IconAlert, IconLock } from "../components/Icons.jsx";
 
 // step: "idle" | "camera" | "detecting" | "review" | "billing" | "done" | "error"
 
@@ -251,6 +252,23 @@ export default function Checkout() {
     setCameraError("");
     setErrorMessage("");
     setCart([]);
+
+    // navigator.mediaDevices only exists in a "secure context" — https://,
+    // or http://localhost. A plain http://192.168.x.x LAN address (what
+    // phone testing uses) doesn't qualify, so mediaDevices is undefined
+    // there and calling .getUserMedia on it throws a raw, confusing
+    // TypeError ("undefined is not an object...") rather than anything
+    // that explains what's actually going on. Checked explicitly so the
+    // message people actually see says why, instead of a browser internal.
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraError(
+        window.location.protocol === "https:"
+          ? "This browser doesn't support camera access."
+          : "Live camera needs a secure connection (https://, or localhost) — it's blocked over a plain http:// address like this one. Use \"Take or upload a photo\" instead, or open the app via localhost on the computer running it."
+      );
+      return;
+    }
+
     setStep("camera");
     try {
       // facingMode "environment" prefers the rear/world-facing camera on
@@ -352,13 +370,13 @@ export default function Checkout() {
   return (
     <PageShell
       group="Store Operations"
-      icon="🛒"
+      icon={<IconCart />}
       title="Checkout"
       caption="Scan items, build the cart, and print the receipt."
       status={statusMessage}
     >
       {step === "idle" && (
-        <div className="bb-card bb-checkout-upload">
+        <div className="bb-card bb-checkout-upload" data-tour="checkout-upload">
           <input
             ref={fileInputRef}
             type="file"
@@ -370,23 +388,23 @@ export default function Checkout() {
           />
           <div className="bb-checkout-actions" style={{ justifyContent: "center" }}>
             <label htmlFor="checkout-photo-input" className="bb-btn bb-btn-primary">
-              📷 Take or upload a photo
+              <IconCamera /> Take or upload a photo
             </label>
             <button type="button" className="bb-btn bb-btn-secondary" onClick={openCamera}>
-              🎥 Use webcam
+              <IconVideo /> Use webcam
             </button>
           </div>
           {cameraError && (
-            <p className="bb-caption" style={{ marginTop: 10, marginBottom: 0 }}>
-              ⚠️ {cameraError}
+            <p className="bb-caption bb-inline-icon-text" style={{ marginTop: 10, marginBottom: 0 }}>
+              <IconAlert /> {cameraError}
             </p>
           )}
           <p className="bb-caption" style={{ marginTop: 14, marginBottom: 4 }}>
             Reliably detectable right now: {RELIABLE_ITEMS.join(", ")}. More
             items arrive as they're trained in.
           </p>
-          <p className="bb-caption" style={{ marginTop: 0, marginBottom: 0 }}>
-            ⚠️ {UNRELIABLE_ITEM_NOTE}
+          <p className="bb-caption bb-inline-icon-text" style={{ marginTop: 0, marginBottom: 0 }}>
+            <IconAlert /> {UNRELIABLE_ITEM_NOTE}
           </p>
         </div>
       )}
@@ -426,8 +444,8 @@ export default function Checkout() {
           )}
 
           {errorMessage && (
-            <p className="bb-caption" style={{ marginBottom: 10 }}>
-              ⚠️ {errorMessage}
+            <p className="bb-caption bb-inline-icon-text" style={{ marginBottom: 10 }}>
+              <IconAlert /> {errorMessage}
             </p>
           )}
 
@@ -441,7 +459,7 @@ export default function Checkout() {
               onClick={lockCart}
               disabled={cart.length === 0}
             >
-              🔒 Lock cart
+              <IconLock /> Lock cart
             </button>
           </div>
         </div>

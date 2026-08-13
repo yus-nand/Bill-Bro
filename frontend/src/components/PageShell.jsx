@@ -13,7 +13,7 @@ export default function PageShell({
   children,
 }) {
   return (
-    <div className="bb-page">
+    <div className="bb-page" data-tour="page-header">
       <header className="bb-page-header">
         {group && <p className="bb-eyebrow">{group}</p>}
         <div className="bb-page-title-row">
@@ -28,7 +28,7 @@ export default function PageShell({
       </header>
 
       {status && (
-        <div className="bb-card bb-status-card">
+        <div className="bb-card bb-status-card" data-tour="page-status">
           <span className="bb-status-dot" aria-hidden="true" />
           <p>{status}</p>
         </div>
