@@ -85,6 +85,25 @@ def migrate(db_path: str) -> None:
     # as-is is the lower-risk choice here — it's a cosmetic mismatch
     # against the ORM model, not a functional bug.
 
+    # ── store_settings: new table entirely (Week 7, Admin page) ──────────
+    # Whole table is new, not just a column, so this is a CREATE TABLE IF
+    # NOT EXISTS rather than an ALTER TABLE — same idempotent, safe-to-
+    # rerun spirit as the rest of this script. Column defaults mirror
+    # database.py's StoreSettings model exactly. No backfill needed since
+    # GET /admin/settings upserts a default row on first read anyway
+    # (_get_or_create_settings in api_app.py) — this just makes sure the
+    # table itself exists before that first read happens.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS store_settings (
+            store_id TEXT PRIMARY KEY,
+            tax_rate_pct REAL DEFAULT 18.0,
+            currency_symbol TEXT DEFAULT '₹',
+            low_stock_default_threshold INTEGER DEFAULT 5,
+            updated_at TIMESTAMP
+        )
+    """)
+    print("  store_settings: table created (or already existed)")
+
     conn.commit()
     conn.close()
     print("\nDone.")
