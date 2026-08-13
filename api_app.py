@@ -18,7 +18,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from database import Base, Item, Inventory, Alert, ModelVersion, Transaction, TrainingJob
+from database import Base, Item, Inventory, Alert, ModelVersion, Transaction, TrainingJob, TrainingData
 
 try:
     from predict import GroceryDetector
@@ -269,6 +269,90 @@ def restock_item(
         "new_count": inventory.current_count,
         "batch_number": item.batch_number,
         "batch_arrival_date": item.batch_arrival_date.isoformat() if item.batch_arrival_date else None
+    }
+
+
+@app.delete("/items/{item_id}", tags=["Items"])
+def delete_item(
+    item_id: int,
+    force: bool = False,
+    db: Session = Depends(get_db),
+):
+    """
+    Hard-delete an item and its owned rows. Replaces going around the API
+    to delete rows directly from billbro_mvp.db via raw SQL, which is
+    what we'd been doing all session for test/mistaken items ("Jesus",
+    two "OnePlus Buds 4" attempts).
+
+    Hard delete, not soft delete: transactions already store item info as
+    a point-in-time JSON snapshot (items_json), not a live FK, so old
+    receipts are unaffected either way a delete happens. A soft-delete
+    flag would mean either overloading `status` (which already means
+    something else — the training lifecycle) or a new column plus
+    another migration, for no real benefit here — nothing in this app
+    needs "undo a delete" or an audit trail of removed items.
+
+    Guarded, not unconditional: blocks with 409 (unless force=true) when
+    deleting would silently destroy something real:
+      - status == 'shelved': this item is already baked into the live
+        trained model's class list. Deleting the row does NOT un-train
+        the model — it'll keep confidently "detecting" an item that no
+        longer exists in the DB. Known limitation, not fixed here: there
+        is no un-train endpoint. force=true proceeds anyway.
+      - existing training_data rows: real captured photos, not
+        disposable metadata. force=true cascades their deletion too.
+    Alerts are NOT a blocking condition — they're ephemeral
+    notifications, not records worth confirming over.
+
+    inventory, alerts, and training_data all cascade automatically via
+    Item's relationship(..., cascade='all, delete-orphan') in
+    database.py. training_jobs does NOT — there's no relationship
+    defined on Item for it, and no ON DELETE CASCADE in the raw SQL
+    schema either — so it's deleted explicitly below to avoid leaving
+    orphaned rows with a dangling item_id.
+    """
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    training_data_count = db.query(TrainingData).filter(TrainingData.item_id == item_id).count()
+
+    if not force:
+        blockers = []
+        if item.status == "shelved":
+            blockers.append(
+                "status is 'shelved' — this item is already baked into the "
+                "live trained model's class list; deleting the row does not "
+                "un-train the model"
+            )
+        if training_data_count > 0:
+            blockers.append(f"{training_data_count} training_data row(s) reference this item")
+
+        if blockers:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "Refusing to delete without force=true",
+                    "reasons": blockers,
+                    "hint": "Retry as DELETE /items/{item_id}?force=true to proceed anyway.",
+                },
+            )
+
+    item_name = item.name
+    item_status = item.status
+
+    deleted_jobs = db.query(TrainingJob).filter(TrainingJob.item_id == item_id).delete()
+
+    db.delete(item)
+    db.commit()
+
+    return {
+        "status": "success",
+        "item_id": item_id,
+        "item_name": item_name,
+        "was_shelved": item_status == "shelved",
+        "deleted_training_jobs": deleted_jobs,
+        "deleted_training_data": training_data_count,
     }
 
 
