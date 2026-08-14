@@ -20,7 +20,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from database import Base, Item, Inventory, Alert, ModelVersion, Transaction, TrainingJob, StoreSettings
+from database import Base, Item, Inventory, Alert, ModelVersion, Transaction, TrainingJob, StoreSettings, TrainingData
 
 try:
     from predict import GroceryDetector, StoreModelManager
@@ -298,40 +298,82 @@ def create_item(
 
 
 @app.delete("/items/{item_id}", tags=["Items"])
-def delete_item(item_id: int, db: Session = Depends(get_db)):
+def delete_item(
+    item_id: int,
+    force: bool = False,
+    db: Session = Depends(get_db),
+):
     """
     Permanently remove an item — added so QA/testing (adding a throwaway
     item to test the training flow, then wanting it gone) doesn't need
-    someone hand-editing the database every time.
+    someone hand-editing the database every time. Merged from two
+    independent implementations built the same night (Person A and
+    Person C both hit the same "no way to delete a test item" gap) —
+    this keeps the stronger guard from each.
 
-    Item.inventory / .alerts / .training_data all have
-    cascade='all, delete-orphan' set in database.py, so db.delete(item)
-    takes those with it automatically. transactions.items_json is a
-    point-in-time JSON snapshot rather than a live foreign key (see
-    Transaction model), so old receipts mentioning a since-deleted item
-    are untouched and still readable — deleting the catalog entry doesn't
-    rewrite sales history. Also clears any staged training photos on disk
-    for this item, so a later item reusing the same id (SQLite reuses
-    freed autoincrement ids) doesn't inherit orphaned photos.
+    Hard delete, not soft delete: transactions already store item info
+    as a point-in-time JSON snapshot (items_json), not a live FK, so old
+    receipts are unaffected either way a delete happens. Item.inventory /
+    .alerts / .training_data all have cascade='all, delete-orphan' set in
+    database.py, so db.delete(item) takes those with it automatically.
+    training_jobs does NOT cascade (no relationship defined on Item for
+    it, no ON DELETE CASCADE in the raw SQL schema), so it's deleted
+    explicitly below to avoid leaving orphaned rows with a dangling
+    item_id. Also clears any staged training photos on disk for this
+    item, so a later item reusing the same id (SQLite reuses freed
+    autoincrement ids) doesn't inherit orphaned photos.
 
-    Blocked (409) while status == 'training': the background thread in
-    /training/upload_images and /items/{id}/retrain both re-fetch the
-    Item row by id when the run finishes and just no-op if it's gone
-    (see the `if it:` guards there), so deleting mid-run wouldn't crash
-    anything — but silently vanishing a row the user is actively watching
-    progress on is more confusing than just asking them to wait or
-    dismiss the job first.
+    Guarded, not unconditional: blocks with 409 (unless force=true) when
+    deleting would silently destroy or orphan something real:
+      - status == 'training': a background thread is actively running
+        for this item. It re-fetches the Item row by id when the run
+        finishes and just no-ops if it's gone, so this wouldn't crash
+        anything — but vanishing a row the user is actively watching
+        progress on is confusing, so it's blocked by default anyway.
+      - status == 'shelved': this item is already baked into the live
+        trained model's class list. Deleting the row does NOT un-train
+        the model — it'll keep confidently "detecting" an item that no
+        longer exists in the DB. Known limitation, not fixed here: there
+        is no un-train endpoint.
+      - existing training_data rows: real captured photos, not
+        disposable metadata.
+    Alerts are NOT a blocking condition — they're ephemeral
+    notifications, not records worth confirming over.
     """
     item = db.query(Item).filter(Item.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
-    if item.status == "training":
-        raise HTTPException(
-            status_code=409,
-            detail="This item is currently training — wait for it to finish (or fail) before deleting it.",
-        )
+
+    training_data_count = db.query(TrainingData).filter(TrainingData.item_id == item_id).count()
+
+    if not force:
+        blockers = []
+        if item.status == "training":
+            blockers.append("status is 'training' — wait for it to finish (or fail) before deleting it")
+        if item.status == "shelved":
+            blockers.append(
+                "status is 'shelved' — this item is already baked into the "
+                "live trained model's class list; deleting the row does not "
+                "un-train the model"
+            )
+        if training_data_count > 0:
+            blockers.append(f"{training_data_count} training_data row(s) reference this item")
+
+        if blockers:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "Refusing to delete without force=true",
+                    "reasons": blockers,
+                    "hint": "Retry as DELETE /items/{item_id}?force=true to proceed anyway.",
+                },
+            )
 
     item_name = item.name
+    item_status = item.status
+
+    deleted_jobs = db.query(TrainingJob).filter(TrainingJob.item_id == item_id).delete()
+
     db.delete(item)
     db.commit()
 
@@ -339,7 +381,14 @@ def delete_item(item_id: int, db: Session = Depends(get_db)):
     if upload_dir.exists():
         shutil.rmtree(upload_dir, ignore_errors=True)
 
-    return {"status": "success", "item_id": item_id, "item_name": item_name}
+    return {
+        "status": "success",
+        "item_id": item_id,
+        "item_name": item_name,
+        "was_shelved": item_status == "shelved",
+        "deleted_training_jobs": deleted_jobs,
+        "deleted_training_data": training_data_count,
+    }
 
 
 class RestockRequest(BaseModel):
