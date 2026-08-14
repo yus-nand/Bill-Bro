@@ -68,212 +68,292 @@ body {
 /* ─── Layout ──────────────────────────────────────────────────────────── */
 
 .bb-layout {
-  display: flex;
   min-height: 100vh;
+  display: flex;
+  flex-direction: column;
 }
 
-/* ─── Sidebar ─────────────────────────────────────────────────────────── */
+/* ─── Top bar ─────────────────────────────────────────────────────────── */
 
-.bb-sidebar {
-  width: 272px;
-  flex-shrink: 0;
+.bb-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
   background: var(--bg-sidebar);
-  border-right: 1px solid var(--border);
-  padding: 24px 18px;
+  border-bottom: 1px solid var(--border);
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.bb-topbar-inner {
+  max-width: 1160px;
+  margin: 0 auto;
+  padding: 0 20px;
+  height: 56px;
   display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  transition: background-color 0.15s ease, border-color 0.15s ease,
-    width 0.18s ease, padding 0.18s ease;
-}
-
-.bb-sidebar.collapsed {
-  width: 76px;
-  padding: 24px 12px;
-}
-
-.bb-brand-row {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 4px;
-}
-
-.bb-sidebar.collapsed .bb-brand-row {
-  flex-direction: column;
   align-items: center;
-  gap: 12px;
+  gap: 20px;
 }
 
-.bb-brand h1 {
-  font-size: 20px;
-  margin: 0 0 4px;
-  white-space: nowrap;
-}
-
-.bb-sidebar.collapsed .bb-brand h1 {
-  margin: 0;
-}
-
-.bb-subtitle {
-  font-size: 13px;
-  color: var(--text-muted);
-  margin: 0 0 20px;
-  white-space: nowrap;
-}
-
-.bb-collapse-toggle {
+.bb-brand-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-decoration: none;
+  color: var(--text);
   flex-shrink: 0;
+}
+
+.bb-brand-mark {
   width: 26px;
   height: 26px;
+  border-radius: 7px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid var(--border);
-  background: var(--bg-card);
+  flex-shrink: 0;
+}
+
+.bb-brand-name {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.bb-topbar-nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.bb-topbar-nav::-webkit-scrollbar {
+  display: none;
+}
+
+.bb-topbar-nav a {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 11px;
+  border-radius: var(--radius-sm);
+  text-decoration: none;
+  color: var(--text-muted);
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.bb-topbar-nav a:hover {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.bb-topbar-nav a.active {
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
+}
+
+.bb-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.bb-icon-btn {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  background: transparent;
   color: var(--text-muted);
   border-radius: var(--radius-sm);
   cursor: pointer;
   transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
 
-.bb-collapse-toggle:hover {
+.bb-icon-btn:hover {
   background: var(--accent-soft);
   color: var(--accent);
   border-color: var(--accent);
 }
 
-.bb-divider {
-  border: none;
-  border-top: 1px solid var(--border);
-  margin: 14px 0;
-}
-
-/* ─── Nav ─────────────────────────────────────────────────────────────── */
-
-.bb-nav-group {
-  margin-bottom: 18px;
-}
-
-.bb-nav-group-label {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-faint);
-  margin: 0 0 6px 10px;
-}
-
-.bb-nav {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.bb-nav a {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  border-radius: var(--radius-sm);
-  text-decoration: none;
-  color: var(--text);
-  font-size: 14.5px;
-  border-left: 3px solid transparent;
-  transition: background-color 0.12s ease, color 0.12s ease;
-}
-
-.bb-nav-icon {
-  font-size: 15px;
-  line-height: 1;
-}
-
-.bb-nav a:hover {
-  background: var(--accent-soft);
-}
-
-.bb-nav a.active {
-  background: var(--accent-soft);
-  color: var(--accent-soft-text);
-  border-left-color: var(--accent);
-  font-weight: 600;
-}
-
-.bb-sidebar.collapsed .bb-nav a {
-  justify-content: center;
-  padding: 10px 0;
-  gap: 0;
-}
-
-/* ─── Sidebar footer ──────────────────────────────────────────────────── */
-
-.bb-sidebar-footer {
-  margin-top: auto;
-  font-size: 12px;
-  color: var(--text-muted);
-}
-
-.bb-sidebar-footer p {
-  margin: 4px 0;
-}
-
-.bb-sidebar-footer code {
-  background: var(--bg-card-muted);
-  border: 1px solid var(--border);
-  padding: 1px 5px;
-  border-radius: 4px;
-  color: var(--text);
-}
-
-.bb-version-badge {
-  margin-top: 8px;
-  background: var(--accent-soft);
-  color: var(--accent-soft-text);
-  border-radius: var(--radius-sm);
-  padding: 6px 10px;
-  font-size: 12px;
+.bb-menu-toggle {
+  display: none;
 }
 
 .bb-theme-toggle {
   display: flex;
   align-items: center;
-  gap: 8px;
-  width: 100%;
-  border: 1px solid var(--border);
-  background: var(--bg-card);
-  color: var(--text);
+  gap: 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
   border-radius: var(--radius-sm);
-  padding: 8px 10px;
-  font-size: 13px;
+  padding: 7px 9px;
+  font-size: 12.5px;
+  font-weight: 600;
   cursor: pointer;
-  transition: background-color 0.12s ease, border-color 0.12s ease;
+  transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
 
 .bb-theme-toggle:hover {
   background: var(--accent-soft);
+  color: var(--accent);
   border-color: var(--accent);
-}
-
-.bb-theme-toggle.collapsed {
-  justify-content: center;
-  padding: 8px;
 }
 
 .bb-theme-toggle-icon {
   display: inline-flex;
-  color: var(--accent);
+  color: currentColor;
+}
+
+/* ─── Mobile menu (dropdown panel under the top bar) ─────────────────── */
+
+.bb-mobile-menu {
+  display: none;
 }
 
 /* ─── Main content ────────────────────────────────────────────────────── */
 
 .bb-main {
   flex: 1;
-  padding: 40px 44px;
+  width: 100%;
   max-width: 900px;
+  margin: 0 auto;
+  padding: 32px 24px 60px;
+}
+
+/* ─── Responsive: tablet / phone ─────────────────────────────────────── */
+
+@media (max-width: 860px) {
+  .bb-topbar-nav {
+    display: none;
+  }
+
+  .bb-menu-toggle {
+    display: flex;
+  }
+
+  .bb-theme-toggle span {
+    display: none;
+  }
+
+  .bb-theme-toggle {
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .bb-mobile-menu {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 14px 14px;
+    border-top: 1px solid var(--border);
+    animation: bb-fade-in 0.15s ease both;
+  }
+
+  .bb-mobile-menu a {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 8px;
+    border-radius: var(--radius-sm);
+    text-decoration: none;
+    color: var(--text);
+    font-size: 14.5px;
+    font-weight: 600;
+  }
+
+  .bb-mobile-menu a.active {
+    background: var(--accent-soft);
+    color: var(--accent-soft-text);
+  }
+
+  .bb-main {
+    padding: 20px 16px 48px;
+  }
+
+  .bb-page-header h2 {
+    font-size: 22px;
+  }
+
+  /* iOS Safari auto-zooms the page when a focused input's font-size is
+     under 16px — jarring on a form with several fields in a row. Bumping
+     just these on mobile (desktop keeps the tighter 14px) avoids it. */
+  .bb-form-field input,
+  .bb-search {
+    font-size: 16px;
+  }
+
+  /* Touch targets: the desktop-sized icon buttons and small buttons are
+     comfortably clickable with a mouse but run under the ~40px a
+     fingertip needs. Only widened on mobile, not shrinking desktop
+     density. */
+  .bb-icon-btn,
+  .bb-theme-toggle {
+    width: 40px;
+    height: 40px;
+  }
+
+  .bb-btn-small {
+    padding: 9px 14px;
+    font-size: 13.5px;
+  }
+
+  .bb-topbar-nav a,
+  .bb-mobile-menu a {
+    min-height: 40px;
+  }
+}
+
+@media (max-width: 560px) {
+  .bb-topbar-inner {
+    padding: 0 14px;
+    gap: 10px;
+  }
+
+  .bb-brand-name {
+    display: none;
+  }
+
+  /* Tables don't reflow to cards here — they scroll horizontally inside
+     their card instead. Simpler, and keeps every column visible rather
+     than guessing which ones matter most on a phone. */
+  .bb-card:has(.bb-table) {
+    overflow-x: auto;
+  }
+
+  .bb-table {
+    min-width: 560px;
+  }
+
+  .bb-restock-form,
+  .bb-admin-settings-form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .bb-restock-form .bb-form-field,
+  .bb-admin-settings-form .bb-form-field {
+    min-width: 0;
+    max-width: none;
+  }
+
+  .bb-checkout-actions {
+    flex-wrap: wrap;
+  }
 }
 
 .bb-page-header {
@@ -298,6 +378,13 @@ body {
 .bb-page-icon {
   font-size: 26px;
   line-height: 1;
+  color: var(--accent);
+  display: inline-flex;
+}
+
+.bb-page-icon svg {
+  width: 24px;
+  height: 24px;
 }
 
 .bb-page-header h2 {
@@ -395,7 +482,7 @@ body {
 }
 
 .total-banner {
-  background: linear-gradient(135deg, var(--accent), var(--accent-dark));
+  background: var(--accent-dark);
   color: white;
   border-radius: var(--radius);
   padding: 18px;
@@ -570,12 +657,12 @@ body {
 }
 
 .bb-btn-primary {
-  background: linear-gradient(135deg, var(--accent), var(--accent-dark));
+  background: var(--accent);
   color: #fff;
 }
 
-.bb-btn-primary:hover {
-  opacity: 0.9;
+.bb-btn-primary:hover:not(:disabled) {
+  background: var(--accent-dark);
 }
 
 .bb-btn-primary:disabled {
@@ -594,6 +681,17 @@ body {
   border-color: var(--accent);
 }
 
+.bb-btn-danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-color: transparent;
+}
+
+.bb-btn-danger:hover:not(:disabled) {
+  background: var(--danger);
+  color: #fff;
+}
+
 .bb-visually-hidden {
   position: absolute;
   width: 1px;
@@ -610,10 +708,20 @@ body {
   padding: 32px 18px;
 }
 
+/* object-fit: contain (not cover) is deliberate here — this preview's
+   job is "confirm this is the photo actually being analyzed", so
+   showing the WHOLE frame matters more than filling the box edge to
+   edge. cover + a short fixed max-height used to crop tall phone
+   photos (portrait, e.g. 1179x2556) down to a thin horizontal sliver —
+   the actual image sent to /detect was always the full original, but
+   there was no way to tell from a preview that had silently sliced off
+   the top and bottom of it. The muted background fills the letterboxed
+   space around portrait photos instead of leaving it looking broken. */
 .bb-checkout-preview img {
   width: 100%;
-  max-height: 260px;
-  object-fit: cover;
+  max-height: 420px;
+  object-fit: contain;
+  background: var(--bg-card-muted);
   border-radius: var(--radius-sm);
   display: block;
 }
@@ -625,8 +733,8 @@ body {
 
 .bb-webcam-video {
   width: 100%;
-  max-height: 260px;
-  object-fit: cover;
+  max-height: 420px;
+  object-fit: contain;
   border-radius: var(--radius-sm);
   display: block;
   background: #000;
@@ -789,6 +897,24 @@ body {
   font-size: 12.5px;
 }
 
+/* ─── Admin (store settings + bulk upload) ───────────────────────────── */
+
+.bb-admin-settings-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.bb-admin-settings-form .bb-form-field {
+  min-width: 160px;
+  max-width: 220px;
+}
+
+.bb-admin-settings-form .bb-form-error {
+  flex-basis: 100%;
+  margin-bottom: 0;
+}
+
 /* ─── Image capture grid (Add Item) ──────────────────────────────────── */
 
 .bb-image-grid {
@@ -841,7 +967,7 @@ body {
 
 .bb-progress-fill {
   height: 100%;
-  background: linear-gradient(135deg, var(--accent), var(--accent-dark));
+  background: var(--accent);
   transition: width 0.4s ease;
 }
 
@@ -867,4 +993,382 @@ body {
 .bb-result-failure {
   background: var(--danger-soft);
   color: var(--danger);
+}
+
+/* ─── Page transition ─────────────────────────────────────────────────── */
+/* Keyed on the route in App.jsx so this restarts every navigation —
+   just enough motion to feel intentional without slowing anyone down. */
+
+.bb-page-fade {
+  animation: bb-fade-in 0.22s ease both;
+}
+
+@keyframes bb-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ─── Buttons: pressed feedback ──────────────────────────────────────── */
+
+.bb-btn {
+  transform: translateY(0);
+}
+
+.bb-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+/* ─── Cards: subtle hover lift on interactive ones ───────────────────── */
+
+.bb-card {
+  transition: background-color 0.15s ease, border-color 0.15s ease,
+    box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+/* ─── Table rows ──────────────────────────────────────────────────────── */
+
+.bb-table tbody tr {
+  transition: background-color 0.12s ease;
+}
+
+.bb-table tbody tr:hover {
+  background: var(--accent-soft);
+}
+
+/* Expanded detail rows (restock form / retrain panel / progress card) —
+   a quick slide-fade so the row doesn't just pop into existence. */
+.bb-table tbody tr.bb-row-expand td {
+  animation: bb-row-in 0.18s ease both;
+}
+
+@keyframes bb-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ─── Toasts ──────────────────────────────────────────────────────────── */
+
+.bb-toast-stack {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(360px, calc(100vw - 40px));
+}
+
+.bb-toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  animation: bb-toast-in 0.18s ease both;
+}
+
+@keyframes bb-toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.bb-toast p {
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--text);
+  line-height: 1.4;
+  flex: 1;
+}
+
+.bb-toast-icon {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  margin-top: 1px;
+}
+
+.bb-toast-success .bb-toast-icon {
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
+}
+
+.bb-toast-error .bb-toast-icon {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.bb-toast-info .bb-toast-icon {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.bb-toast-close {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0 0 4px;
+}
+
+.bb-toast-close:hover {
+  color: var(--text);
+}
+
+/* ─── Dropzone (photo capture) ────────────────────────────────────────── */
+
+.bb-dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  text-align: center;
+  border: 2px dashed var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card-muted);
+  padding: 24px 16px;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.bb-dropzone-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.bb-dropzone-icon {
+  font-size: 26px;
+  line-height: 1;
+}
+
+.bb-dropzone-text {
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--text-muted);
+}
+
+/* ─── Skeleton loading ────────────────────────────────────────────────── */
+
+.bb-skeleton-line {
+  height: 12px;
+  border-radius: 4px;
+  background: linear-gradient(
+    90deg,
+    var(--bg-card-muted) 25%,
+    var(--border) 50%,
+    var(--bg-card-muted) 75%
+  );
+  background-size: 200% 100%;
+  animation: bb-skeleton-shimmer 1.3s ease-in-out infinite;
+}
+
+@keyframes bb-skeleton-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+/* ─── Inline icon + text (warnings, inline confirmations) ───────────────── */
+
+.bb-inline-icon-text {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.bb-inline-icon-text svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+/* ─── Search field with leading icon ─────────────────────────────────── */
+
+.bb-search-wrap {
+  position: relative;
+  margin-bottom: 14px;
+}
+
+.bb-search-icon {
+  position: absolute;
+  left: 11px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-faint);
+  pointer-events: none;
+}
+
+.bb-search-wrap .bb-search {
+  margin-bottom: 0;
+  padding-left: 34px;
+}
+
+/* ─── Environment info (Admin page footer card) ──────────────────────── */
+
+.bb-env-card {
+  background: var(--bg-card-muted);
+}
+
+.bb-env-card code {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: var(--text);
+}
+
+/* ─── Guided tour ─────────────────────────────────────────────────────── */
+
+.bb-tour-root {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+}
+
+.bb-tour-dim {
+  position: fixed;
+  background: rgba(0, 0, 0, 0.55);
+  transition: all 0.18s ease;
+}
+
+.bb-tour-ring {
+  position: fixed;
+  border: 2px solid var(--accent);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 0 0 4px var(--accent-soft);
+  pointer-events: none;
+  transition: all 0.18s ease;
+}
+
+.bb-tour-tooltip {
+  position: fixed;
+  z-index: 201;
+  width: 300px;
+  max-width: calc(100vw - 24px);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 16px;
+}
+
+.bb-tour-progress {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.bb-tour-tooltip h3 {
+  margin: 0 0 6px;
+  font-size: 15.5px;
+}
+
+.bb-tour-tooltip p {
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.bb-tour-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 14px;
+}
+
+.bb-tour-prompt {
+  position: fixed;
+  left: 20px;
+  bottom: 20px;
+  z-index: 150;
+  width: 260px;
+  max-width: calc(100vw - 40px);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  border-radius: var(--radius);
+  padding: 14px;
+  animation: bb-toast-in 0.2s ease both;
+}
+
+.bb-tour-prompt-title {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.bb-tour-prompt-body {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.bb-tour-prompt-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+@media (max-width: 560px) {
+  .bb-tour-prompt {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    width: auto;
+  }
+}
+
+/* ─── Empty states ────────────────────────────────────────────────────── */
+
+.bb-empty-state {
+  text-align: center;
+  padding: 36px 16px;
+  color: var(--text-muted);
+}
+
+.bb-empty-state-icon {
+  font-size: 30px;
+  margin-bottom: 8px;
+  opacity: 0.7;
+}
+
+.bb-empty-state p {
+  margin: 0;
+  font-size: 14px;
 }

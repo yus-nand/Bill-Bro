@@ -62,6 +62,11 @@ export const restockItem = (id, quantityAdded, batchNumber, batchArrivalDate, ex
     ...(batchArrivalDate && { batch_arrival_date: batchArrivalDate }),
     ...(expiryDate && { expiry_date: expiryDate }),
   });
+// Permanently removes an item (and its inventory/alerts/training data —
+// cascaded server-side). 404s if it's already gone, 409s if it's
+// currently mid-training (backend asks you to wait or dismiss the job
+// first rather than deleting out from under an in-progress run).
+export const deleteItem = (id) => client.delete(`/items/${id}`);
 
 // ── Inventory (stock levels — dynamic, changes with each sale) ──────────
 // Confirmed shape: [{ id, name, sku, price, current_count,
@@ -153,12 +158,38 @@ export const uploadTrainingImages = (itemId, itemName, files, storeId) => {
 };
 export const getTrainingJob = (jobId) => client.get(`/training/job/${jobId}`);
 
+// Retrain an EXISTING item from photos already sitting on the server
+// (training_uploads/item_{id}/, left there by a prior upload_training_images
+// call — nothing deletes them after training finishes). Added alongside
+// Inventory's "Retrain" flow so reusing old photos doesn't require the
+// browser to somehow re-upload files it no longer has in memory. No body
+// needed — the backend reads item_name off the Item row itself and finds
+// whatever photos are already on disk. 404s if the item doesn't exist,
+// 400s if no photos are on disk for it (caller should fall back to the
+// fresh-photos path, same as a new Add Item flow, in that case).
+export const retrainFromExistingPhotos = (itemId) =>
+  client.post(`/items/${itemId}/retrain`);
+
 // ─────────────────────────────────────────────────────────────────────────
 // PROPOSED — no confirmed endpoint from Person A yet (see API_CONTRACT.md
 // "Open questions"). Calling these will 404 until they exist.
 // ─────────────────────────────────────────────────────────────────────────
 
-// Admin (Week 7)
+// Admin — built and confirmed live this session. GET/PUT /admin/settings
+// upserts a default row on first read (never 404s), so getStoreSettings()
+// is safe to call on page load even for a store that's never customized
+// anything. PUT is a partial update — only send the fields that changed.
+export const getStoreSettings = () => client.get("/admin/settings");
+export const updateStoreSettings = (settings) =>
+  client.put("/admin/settings", settings);
+
+// POST /admin/bulk_upload — multipart, field "file", CSV with a
+// name/sku/price header row required (category/expiry_date/
+// low_stock_threshold optional). Upserts by sku. Response:
+// { status, created, updated, error_count, errors: [{ row, error }] }
+// — per-row errors are collected, not fatal, so a bad row doesn't block
+// the rest of the file. Surface `errors` directly, don't just show
+// created/updated counts.
 export const uploadBulkCsv = (file) => {
   const form = new FormData();
   form.append("file", file);
@@ -166,8 +197,6 @@ export const uploadBulkCsv = (file) => {
     headers: { "Content-Type": "multipart/form-data" },
   });
 };
-export const updateStoreSettings = (settings) =>
-  client.put("/admin/settings", settings);
 
 // Model version history / rollback (Week 8) — doc only confirms
 // GET /models/active, not a full version list or activate/rollback.
